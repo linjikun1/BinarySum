@@ -1,0 +1,9 @@
+bleu
+rouge-score
+meteor-score
+nltk
+torch
+transformers
+bert-score
+numpy
+tqdm
