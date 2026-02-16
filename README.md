@@ -1,14 +1,39 @@
 # BinarySum: Binary Code Summary Generation Framework
 
-This repository implements a framework for generating summaries for stripped binary code, supporting research into hierarchical path-based semantic summarization (HPSS) and cross-architecture alignment.
+This repository implements **HPSS-CAPD**, a framework for generating summaries for stripped binary code.
 
 ## Project Structure
 
-- `dataset/`: Contains raw data files.
-- `src/process/`: Data preprocessing scripts (IDA Pro extraction, dataset matching).
-- `src/generate/`: Summary generation modules (HPSS, Synthesis).
-- `src/evaluate/`: Evaluation metrics (N-gram, Semantic, LLM-based).
-- `main.py`: Unified entry point for the framework.
+```
+BinarySum/
+├── dataset/           # Raw data files
+├── src/
+│   ├── process/       # Data preprocessing (IDA Pro extraction, dataset matching)
+│   ├── generate/      # Summary generation modules
+│   │   ├── hpss/      # Hierarchical Path-Sensitive Summarization
+│   │   ├── capd/      # Context-Aware Program Denoising (CCR + SDN)
+│   │   └── synthesizer/ # Final summary synthesis
+│   └── evaluate/      # Evaluation metrics
+│       ├── n_gram_metrics/   # BLEU, ROUGE-L, METEOR
+│       ├── semantic_metrics/ # CodeBERTScore, SIDE
+│       └── llm_eval/         # LLM-based evaluation
+└── main.py            # Unified entry point
+```
+
+## Requirements
+
+- Python 3.8+
+- IDA Pro 9.1 (with Hex-Rays Decompiler, for preprocessing)
+- OpenAI API Key (for generation)
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+
+# Optional: LLM-based evaluation
+pip install -U deepeval==3.7.2
+```
 
 ## Usage
 
@@ -19,48 +44,62 @@ The framework provides three main commands: `preprocess`, `generate`, and `evalu
 Process binary files and align them with source code.
 
 ```bash
+# Process a single architecture
 python main.py preprocess \
   --bin-dir /path/to/binary/dir \
   --src-dir /path/to/source/dir \
   --arch-opt x64_O3 \
   --output-dir /path/to/output \
   --ida-path /path/to/idat
+
+# Process all architectures (auto-detect)
+python main.py preprocess \
+  --bin-dir /path/to/binary/dir \
+  --src-dir /path/to/source/dir \
+  --arch-opt all \
+  --output-dir /path/to/output
 ```
 
-### 2. Summary Generation
+**Outputs:**
+- `baseline.pkl.gz`: Comprehensive dataset for BinT5, HexT5, CP-BCS, MiSum, ProRec
+- `dataset.pkl.gz`: CFG and Call Graph data with enriched callers/callees
 
-Generate summaries using the processed dataset. Supports ablation studies.
+### 2. Summary Generation (Ablation Modes)
 
-**Basic Generation (Decompiled Code only):**
+The framework supports 4 ablation modes:
+
+| Mode | Description | Components |
+|------|-------------|------------|
+| M1 | Baseline | Decompiled Code only |
+| M2 | + HPSS | Decompiled + CFG Description |
+| M3 | + HPSS + CCR | M2 + Raw Source Candidates |
+| M4 | Full | M3 + SDN Filtering |
+
 ```bash
-python main.py generate \
-  --input /path/to/dataset.json \
-  --output /path/to/results.json
-```
-
-**Generation with HPSS (Hierarchical Path-Sensitive Summarization):**
-```bash
+# M1: Baseline (Decompiled Code only)
 python main.py generate \
   --input /path/to/dataset.json \
   --output /path/to/results.json \
-  --enable-hpss \
-  --use-cfg
-```
+  --mode M1
 
-**Generation with HPSS + SDN Snippets (Ablation):**
-```bash
+# M2: + HPSS (CFG Description)
 python main.py generate \
   --input /path/to/dataset.json \
   --output /path/to/results.json \
-  --enable-hpss \
-  --use-cfg \
-  --snippet-mode sdn
-```
+  --mode M2
 
-Arguments:
-- `--enable-hpss`: Run the HPSS pipeline to generate CFG descriptions first.
-- `--use-cfg`: Include the CFG description in the synthesis prompt.
-- `--snippet-mode`: `none` (default), `raw`, or `sdn` (Filtered snippets).
+# M3: + HPSS + CCR (Raw Source Candidates)
+python main.py generate \
+  --input /path/to/dataset.json \
+  --output /path/to/results.json \
+  --mode M3
+
+# M4: Full (HPSS + CCR + SDN Filtering)
+python main.py generate \
+  --input /path/to/dataset.json \
+  --output /path/to/results.json \
+  --mode M4
+```
 
 ### 3. Evaluation
 
@@ -75,15 +114,3 @@ python main.py evaluate \
   --semantic \
   --llmeval
 ```
-
-Arguments:
-- `--systems`: Comma-separated list of JSON keys containing summaries to evaluate.
-- `--ngram`: Run BLEU, METEOR, ROUGE.
-- `--semantic`: Run CodeBERTScore, SIDE.
-- `--llmeval`: Run LLM-based evaluation.
-
-## Requirements
-
-- Python 3.8+
-- IDA Pro (for preprocessing)
-- OpenAI API Key (for generation)

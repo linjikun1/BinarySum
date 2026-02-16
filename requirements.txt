@@ -1,0 +1,24 @@
+# BinarySum Dependencies
+
+# Core
+networkx
+tqdm
+openai
+numpy
+
+# N-gram metrics
+bleu
+rouge-score
+meteor-score
+nltk
+
+# Semantic metrics
+torch
+transformers
+bert-score
+
+# Data processing
+pickle5  # For Python 3.7 compatibility
+
+# Optional: LLM-based evaluation
+# pip install -U deepeval==3.7.2

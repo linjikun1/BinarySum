@@ -26,6 +26,7 @@ import logging
 from pathlib import Path
 from tqdm import tqdm
 import re
+import random
 import pickle
 import gzip
 import networkx as nx
@@ -35,7 +36,7 @@ lib_dir = Path(__file__).parent / "lib"
 sys.path.append(str(lib_dir))
 
 try:
-    from lib.analysis.expr_lang_analyzer import ExprLangAnalyzer
+    from analysis.expr_lang_analyzer import ExprLangAnalyzer
 except ImportError:
     print(f"Warning: Could not import ExprLangAnalyzer from {lib_dir}. ProRec features will be skipped.")
     ExprLangAnalyzer = None
@@ -120,6 +121,8 @@ def match_bin_source(bin_data, src_data):
     Strategy: 
     1. Match by exact function name (available from unstripped binary analysis).
     2. Filter by word count similarity.
+    3. Filter by CFG validity (must have edges).
+    4. Deduplicate by source code and unique function signature.
     """
     matched = []
     
@@ -131,6 +134,9 @@ def match_bin_source(bin_data, src_data):
         func = item.get("function_name", "")
         src_index[(proj, func)] = item
     
+    src_seen = set()
+    key_seen = set()
+
     # Iterate binary data
     for bin_func in bin_data:
         proj = bin_func.get("project_name", "").split("-")[0]
@@ -141,13 +147,16 @@ def match_bin_source(bin_data, src_data):
             
         # Optional: content filtering
         decomp_code = bin_func.get("decompiled_code", "")
+        # Use stripped decompiled code for filtering to match old logic
+        strip_decomp_code = bin_func.get("strip_decompiled_code", "")
         src_code = src_item.get("source_code", "") if src_item else None
         
-        wc_decomp = word_count(decomp_code)
+        # wc_decomp = word_count(decomp_code)
+        wc_strip = word_count(strip_decomp_code)
         wc_src = word_count(src_code) if src_code else 0
         
         # Basic sanity check
-        if not (30 < wc_decomp < 9192):
+        if not (30 < wc_strip < 9192):
             continue
             
         # If source matching is required (i.e. src_data is provided), filter by source code size too
@@ -158,6 +167,45 @@ def match_bin_source(bin_data, src_data):
         if src_item and not (30 < wc_src < 9192):
             continue
             
+        # Check CFG edges
+        cfg_data = bin_func.get('cfg', {})
+        # Check if CFG has edges. 
+        # cfg_data is a dict of blocks. each block has 'successors'.
+        has_edges = False
+        for _, block in cfg_data.items():
+            if block.get('successors'):
+                has_edges = True
+                break
+        
+        if not has_edges:
+             # Also check strict node count? Old script checked nodes and edges.
+             # If no edges, it's a single block or disconnected. Old script dropped it.
+             continue
+
+        # Check CG isolation (Old script extract_cfg_cg.py filtered these)
+        # We check the raw callers/callees from IDA (which cover all valid binary functions)
+        raw_callees = bin_func.get('callees', {})
+        raw_callers = bin_func.get('callers', {})
+        
+        if not raw_callees and not raw_callers:
+            continue
+
+        # Deduplication
+        strip_name = bin_func.get('strip_function_name', '')
+        strip_decomp = bin_func.get('strip_decompiled_code', '')
+        addr = bin_func.get('function_addr')
+        
+        base_key = f"{proj}::{addr}::{strip_name}::{strip_decomp[:50]}"
+        
+        if src_code and src_code in src_seen:
+             continue
+        if base_key in key_seen:
+             continue
+             
+        if src_code:
+            src_seen.add(src_code)
+        key_seen.add(base_key)
+
         # Combine data
         matched.append({
             **bin_func, # Contains binary info (CFG, CG, asm, decompiled)
@@ -228,6 +276,7 @@ def save_split_datasets(final_dataset, output_dir):
         # Extract raw callees (format: {addr_str: count})
         raw_callees = rec.get('callees', {})
         enriched_callees = {}
+        enriched_callees_counts = {}
         
         if raw_callees:
             for callee_addr_str, count in raw_callees.items():
@@ -243,11 +292,13 @@ def save_split_datasets(final_dataset, output_dir):
                         'code': callee_info['code'],
                         'data_dep': callee_info['data_dep']
                     }
+                    enriched_callees_counts[str(callee_addr)] = count
                     
         # 2. Enrich Callers (New)
         # Extract raw callers (format: {addr_str: count})
         raw_callers = rec.get('callers', {})
         enriched_callers = {}
+        enriched_callers_counts = {}
         
         if raw_callers:
             for caller_addr_str, count in raw_callers.items():
@@ -263,6 +314,13 @@ def save_split_datasets(final_dataset, output_dir):
                         'code': caller_info['code'],
                         'data_dep': caller_info['data_dep']
                     }
+                    enriched_callers_counts[str(caller_addr)] = count
+        
+        # Filter out items with no callers AND no callees if required
+        # Old logic kept these items even if no connections found within dataset, 
+        # as long as they were in the common set.
+        # if not enriched_callers and not enriched_callees:
+        #    continue
         
         dataset_item = {
             'project_name': proj,
@@ -276,7 +334,10 @@ def save_split_datasets(final_dataset, output_dir):
             'codeart': rec.get('data_for_ProRec'), 
             # Enriched Callers & Callees
             'callers': enriched_callers,
-            'callees': enriched_callees
+            'callees': enriched_callees,
+            # Call counts
+            'callers_call_count': enriched_callers_counts,
+            'callees_call_count': enriched_callees_counts
         }
         result_dataset.append(dataset_item)
 
@@ -293,45 +354,27 @@ def save_split_datasets(final_dataset, output_dir):
             pickle.dump(data, f)
 
 
-def run_pipeline(args):
-    bin_dir = Path(args.bin_dir) / args.arch_opt
-    src_dir = Path(args.src_dir) if args.src_dir else None
+def process_one_arch(arch_opt, args, src_data, scripts_dir):
+    """Processes a single architecture/optimization configuration."""
+    logger.info(f"=== Starting processing for: {arch_opt} ===")
     
-    # Construct output directory: process/tmpresult/<arch_opt>
-    out_dir = Path(args.output_dir) / args.arch_opt
+    bin_dir = Path(args.bin_dir) / arch_opt
+    out_dir = Path(args.output_dir) / arch_opt
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    scripts_dir = Path(__file__).parent / "scripts"
     ida_script = scripts_dir / "ida_extract.py"
-    src_script = scripts_dir / "src_extract.py"
     
-    # 1. Extract Source Info
-    source_json = Path(args.output_dir) / "source_info.json"
-    src_data = []
-    
-    if src_dir:
-        if not source_json.exists():
-            logger.info("Extracting source info...")
-            extract_source(src_dir, source_json, src_script)
-        else:
-            logger.info("Source info already exists, skipping.")
-            
-        with open(source_json, "r") as f:
-            src_data = json.load(f)
-    else:
-        logger.warning("No source directory provided. Source matching will be skipped.")
-        
     # 2. Process Binaries
     # We expect structure: bin_dir/project/*.elf and bin_dir/project/unstrip/*.elf
     if not bin_dir.exists():
         logger.error(f"Binary directory {bin_dir} does not exist.")
-        sys.exit(1)
+        return
         
     projects = [p for p in bin_dir.iterdir() if p.is_dir()]
     
     all_bin_data = []
     
-    for project in tqdm(projects, desc="Processing Projects"):
+    for project in tqdm(projects, desc=f"Processing Projects ({arch_opt})"):
         project_name = project.name
         # Find stripped ELFs (exclude unstrip folder itself)
         elfs = [f for f in project.glob("*.elf") if f.is_file()]
@@ -404,35 +447,77 @@ def run_pipeline(args):
                 
     # 3. Match Binary & Source
     if src_data:
-        logger.info("Matching binary and source data...")
+        logger.info(f"[{arch_opt}] Matching binary and source data...")
         final_dataset = match_bin_source(all_bin_data, src_data)
     else:
-        logger.info("Skipping source matching (no source data). Saving binary info only.")
+        logger.info(f"[{arch_opt}] Skipping source matching (no source data). Saving binary info only.")
         final_dataset = all_bin_data
     
     # 4. Save Final Results
-    logger.info(f"Saving final dataset with {len(final_dataset)} entries to {out_dir}...")
-    
-    # Save master dataset (readable json)
-    with open(out_dir / "dataset.json", "w") as f:
-        json.dump(final_dataset, f, indent=2)
+    logger.info(f"[{arch_opt}] Saving final dataset with {len(final_dataset)} entries to {out_dir}...")
     
     # 5. Save Splits (baseline, dataset)
-    logger.info("Saving datasets (baseline, dataset)...")
+    logger.info(f"[{arch_opt}] Saving datasets (baseline, dataset)...")
     save_split_datasets(final_dataset, out_dir)
         
-    logger.info("Done!")
+    logger.info(f"[{arch_opt}] Done!")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Binary Analysis Pipeline")
     parser.add_argument("--bin-dir", default="/data/linjk/data/binary", help="Directory containing binaries for specific arch (e.g. bindata/x64_O3)")
     parser.add_argument("--src-dir", default="/data/linjk/data/source", help="Directory containing source code")
-    parser.add_argument("--arch-opt", required=True, help="Architecture and optimization level (e.g. x64_O3). Used for output folder naming.")
+    parser.add_argument("--arch-opt", required=True, help="Architecture and optimization level (e.g. x64_O3) or 'all' to process all found.")
     parser.add_argument("--output-dir", default="/data/linjk/process/result", help="Base directory for output data")
     parser.add_argument("--ida-path", default="/data/tool/ida-pro-9.1/idat", help="Path to IDA Pro executable (idat)")
     
     args = parser.parse_args()
-    run_pipeline(args)
     
+    scripts_dir = Path(__file__).parent / "scripts"
+    src_script = scripts_dir / "src_extract.py"
+    
+    # 1. Extract Source Info (Done once for all architectures)
+    source_json = Path(args.output_dir) / "source_info.json"
+    src_data = []
+    
+    if args.src_dir:
+        src_dir_path = Path(args.src_dir)
+        # Check if source_json exists
+        if not source_json.exists():
+            logger.info("Extracting source info (global)...")
+            # Ensure output dir exists
+            Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+            extract_source(src_dir_path, source_json, src_script)
+        else:
+            logger.info("Source info already exists, skipping extraction.")
+            
+        with open(source_json, "r") as f:
+            src_data = json.load(f)
+    else:
+        logger.warning("No source directory provided. Source matching will be skipped.")
+
+    # Determine targets
+    if args.arch_opt.lower() == "all":
+        base_bin_dir = Path(args.bin_dir)
+        if not base_bin_dir.exists():
+            logger.error(f"Base binary directory {base_bin_dir} does not exist.")
+            sys.exit(1)
+            
+        # Find all subdirectories that look like arch_opt (e.g. x64_O3)
+        # Simple heuristic: is directory and contains underscore (or just list all dirs)
+        targets = sorted([d.name for d in base_bin_dir.iterdir() if d.is_dir() and "_" in d.name])
+        logger.info(f"Found {len(targets)} architectures to process: {targets}")
+    else:
+        targets = [args.arch_opt]
+
+    # Process each target
+    for arch in targets:
+        try:
+            process_one_arch(arch, args, src_data, scripts_dir)
+        except Exception as e:
+            logger.error(f"Failed to process {arch}: {e}")
+            import traceback
+            traceback.print_exc()
+
 if __name__ == "__main__":
     main()

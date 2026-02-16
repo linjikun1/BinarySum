@@ -12,6 +12,8 @@ SRC_DIR = ROOT_DIR / "src"
 
 PROCESS_SCRIPT = SRC_DIR / "process" / "pipeline.py"
 HPSS_SCRIPT = SRC_DIR / "generate" / "hpss" / "run_hpss.py"
+CCR_SCRIPT = SRC_DIR / "generate" / "capd" / "ccr" / "run_ccr.py"
+SDN_SCRIPT = SRC_DIR / "generate" / "capd" / "sdn" / "run_sdn.py"
 SYNTH_SCRIPT = SRC_DIR / "generate" / "synthesizer" / "run_synthesis.py"
 EVAL_SCRIPT = SRC_DIR / "evaluate" / "run_evaluation.py"
 
@@ -35,80 +37,110 @@ def run_preprocess(args):
 
 def run_generate(args):
     """
-    Run summary generation pipeline (HPSS + Synthesis).
+    Run summary generation pipeline based on mode (M1-M4).
+    
+    Mode Definitions:
+    - M1: Baseline (Decompiled Code only)
+    - M2: + HPSS (CFG Description)
+    - M3: + HPSS + CCR (Raw Source Candidates)
+    - M4: Full (+ HPSS + CCR + SDN Filtering)
     """
+    mode = args.mode
+    print(f"\n{'='*50}")
+    print(f"Running Generation Pipeline - Mode: {mode}")
+    print(f"{'='*50}")
+    
+    input_path = Path(args.input)
+    work_dir = Path(args.work_dir) if args.work_dir else input_path.parent / "generate_intermediate"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    
     current_input = args.input
     
-    # 1. HPSS Pipeline (if enabled)
-    if args.enable_hpss:
-        print("HPSS Enabled. Starting HPSS Pipeline...")
+    # ========================================
+    # Step 1: HPSS (Mode M2, M3, M4)
+    # ========================================
+    if mode in ['M2', 'M3', 'M4']:
+        print(f"\n[Step 1] Running HPSS Pipeline...")
         
-        # Determine intermediate output directory
-        # If input is a file, use its parent directory for temp files
-        input_path = Path(args.input)
-        work_dir = input_path.parent / "hpss_intermediate"
-        work_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Step 1: Extract Paths
-        # Input: args.input (dataset.pkl.gz or .json)
-        # Output: paths.json
-        paths_file = work_dir / "hpss_step1_paths.json"
-        
-        cmd_step1 = [
+        # Step 1.1: Extract Paths
+        paths_file = work_dir / "hpss_paths.json"
+        cmd_hpss1 = [
             sys.executable, str(HPSS_SCRIPT),
             "--step", "1",
             "--input", str(current_input),
             "--output_dir", str(work_dir)
         ]
-        print(f"Running HPSS Step 1: {' '.join(cmd_step1)}")
-        subprocess.check_call(cmd_step1)
+        print(f"  -> Extracting paths from CFG...")
+        subprocess.check_call(cmd_hpss1)
         
-        # Step 2: Generate HPSS Summaries
-        # Input: paths_file
-        # Output: hpss_summary.json
-        hpss_summary_file = work_dir / "hpss_step2_summary.json"
-        
-        cmd_step2 = [
+        # Step 1.2: Generate HPSS Summaries
+        hpss_file = work_dir / "hpss_summary.json"
+        cmd_hpss2 = [
             sys.executable, str(HPSS_SCRIPT),
             "--step", "2",
-            "--input", str(paths_file), # Step 2 takes the output of step 1 as input (if step=2 logic is used correctly)
-            # Wait, run_hpss.py logic:
-            # if step in [0, 2]: input_for_step2 = path_file if step == 0 else args.input
-            # So if we run step 2 explicitly, we pass path_file as --input.
+            "--input", str(paths_file),
             "--output_dir", str(work_dir)
         ]
+        print(f"  -> Generating CFG descriptions...")
+        subprocess.check_call(cmd_hpss2)
         
-        # run_hpss.py uses fixed names for outputs based on output_dir
-        # path_file = os.path.join(args.output_dir, "hpss_step1_paths.json")
-        # hpss_file = os.path.join(args.output_dir, "hpss_step2_summary.json")
+        current_input = str(hpss_file)
+        print(f"  -> HPSS output: {current_input}")
+    
+    # ========================================
+    # Step 2: CCR (Mode M3, M4)
+    # ========================================
+    if mode in ['M3', 'M4']:
+        print(f"\n[Step 2] Running CCR Pipeline...")
         
-        # So we just need to ensure Step 1 writes to where Step 2 expects it, OR we pass inputs correctly.
-        # run_hpss.py implementation:
-        # if args.step == 2: input_for_step2 = args.input
-        # So yes, we pass paths_file as input to step 2.
+        ccr_file = work_dir / "ccr_candidates.json"
+        cmd_ccr = [
+            sys.executable, str(CCR_SCRIPT),
+            "--input", str(current_input),
+            "--output", str(ccr_file)
+        ]
+        print(f"  -> Generating source code candidates...")
+        subprocess.check_call(cmd_ccr)
         
-        # BUT run_hpss.py also hardcodes the output filename inside `main`:
-        # hpss_file = os.path.join(args.output_dir, "hpss_step2_summary.json")
+        current_input = str(ccr_file)
+        print(f"  -> CCR output: {current_input}")
+    
+    # ========================================
+    # Step 3: SDN (Mode M4 only)
+    # ========================================
+    if mode == 'M4':
+        print(f"\n[Step 3] Running SDN Pipeline...")
         
-        print(f"Running HPSS Step 2: {' '.join(cmd_step2)}")
-        subprocess.check_call(cmd_step2)
+        sdn_file = work_dir / "sdn_filtered.json"
+        cmd_sdn = [
+            sys.executable, str(SDN_SCRIPT),
+            "--input", str(current_input),
+            "--output", str(sdn_file)
+        ]
+        print(f"  -> Filtering source candidates...")
+        subprocess.check_call(cmd_sdn)
         
-        # Update current input for synthesis
-        current_input = hpss_summary_file
-        
-    # 2. Synthesis
-    print("Starting Synthesis...")
+        current_input = str(sdn_file)
+        print(f"  -> SDN output: {current_input}")
+    
+    # ========================================
+    # Final Step: Synthesis (All Modes)
+    # ========================================
+    print(f"\n[Final Step] Running Synthesis...")
+    
     cmd_synth = [
         sys.executable, str(SYNTH_SCRIPT),
         "--input", str(current_input),
         "--output", args.output,
-        "--snippet_mode", args.snippet_mode
+        "--mode", mode
     ]
-    if args.use_cfg:
-        cmd_synth.append("--use_cfg")
-        
-    print(f"Running Synthesis: {' '.join(cmd_synth)}")
+    
+    print(f"  -> Generating final summaries (Mode: {mode})...")
     subprocess.check_call(cmd_synth)
+    
+    print(f"\n{'='*50}")
+    print(f"Generation Complete! Output: {args.output}")
+    print(f"{'='*50}")
 
 def run_eval(args):
     """
@@ -148,9 +180,9 @@ def main():
     parser_gen = subparsers.add_parser("generate", help="Summary Generation")
     parser_gen.add_argument("--input", required=True, help="Input dataset file (JSON)")
     parser_gen.add_argument("--output", required=True, help="Output result file (JSON)")
-    parser_gen.add_argument("--enable-hpss", action="store_true", help="Run HPSS (CFG Description) pipeline first")
-    parser_gen.add_argument("--use-cfg", action="store_true", help="Use CFG description in synthesis")
-    parser_gen.add_argument("--snippet-mode", choices=['none', 'raw', 'sdn'], default='none', help="Snippet usage mode")
+    parser_gen.add_argument("--mode", choices=['M1', 'M2', 'M3', 'M4'], default='M1',
+                            help="Ablation mode: M1(Baseline), M2(+HPSS), M3(+HPSS+CCR), M4(Full)")
+    parser_gen.add_argument("--work-dir", help="Working directory for intermediate files")
     parser_gen.set_defaults(func=run_generate)
     
     # Evaluate Command
