@@ -2,28 +2,10 @@
 
 This repository implements **HPSS-CAPD**, a framework for generating summaries for stripped binary code.
 
-## Project Structure
-
-```
-BinarySum/
-├── dataset/           # Raw data files
-├── src/
-│   ├── process/       # Data preprocessing (IDA Pro extraction, dataset matching)
-│   ├── generate/      # Summary generation modules
-│   │   ├── hpss/      # Hierarchical Path-Sensitive Summarization
-│   │   ├── capd/      # Context-Aware Program Denoising (CCR + SDN)
-│   │   └── synthesizer/ # Final summary synthesis
-│   └── evaluate/      # Evaluation metrics
-│       ├── n_gram_metrics/   # BLEU, ROUGE-L, METEOR
-│       ├── semantic_metrics/ # CodeBERTScore, SIDE
-│       └── llm_eval/         # LLM-based evaluation
-└── main.py            # Unified entry point
-```
-
 ## Requirements
 
 - Python 3.8+
-- IDA Pro 9.1 (with Hex-Rays Decompiler, for preprocessing)
+- IDA Pro 9.1 (with Hex-Rays Decompiler, for processing)
 - OpenAI API Key (for generation)
 
 ## Installation
@@ -35,38 +17,106 @@ pip install -r requirements.txt
 pip install -U deepeval==3.7.2
 ```
 
+## Data Directory Structure
+
+```
+BinarySum/
+├── data/
+│   ├── raw/                        # 原始数据
+│   │   ├── binary/               # 剥离二进制文件
+│   │   │   ├── x64_O3/
+│   │   │   │   └── <project>/
+│   │   │   │       ├── xxx.elf
+│   │   │   │       └── unstrip/xxx.elf
+│   │   │   └── arm_O2/
+│   │   └── source/                 # 源代码
+│   │       └── <project>-src/
+│   │
+│   ├── processed/                  # 预处理后的数据
+│   │   ├── source_info.json        # 全局源代码信息
+│   │   └── <arch>/
+│   │       ├── intermediate/       # IDA 中间结果 (可缓存)
+│   │       ├── baseline.pkl.gz     # 全字段数据集
+│   │       └── dataset.pkl.gz      # CFG+CG 数据集
+│   │
+│   ├── generated/                  # 摘要生成结果
+│   │   └── <arch>/
+│   │       ├── M1/summary.json
+│   │       ├── M2/
+│   │       │   ├── hpss_paths.json
+│   │       │   ├── hpss_summary.json
+│   │       │   └── summary.json
+│   │       ├── M3/
+│   │       │   ├── hpss_*.json
+│   │       │   ├── ccr_candidates.json
+│   │       │   └── summary.json
+│   │       └── M4/
+│   │           ├── hpss_*.json
+│   │           ├── ccr_candidates.json
+│   │           ├── sdn_filtered.json
+│   │           └── summary.json
+│   │
+│   └── results/                    # 评估结果
+│       └── <arch>/
+│           ├── M1_metrics.json
+│           ├── M2_metrics.json
+│           ├── M3_metrics.json
+│           └── M4_metrics.json
+│
+├── src/
+│   ├── process/
+│   │   ├── run_process.py          # 数据处理入口
+│   │   ├── scripts/               # IDA/源码提取脚本
+│   │   └── lib/                   # 分析库
+│   │
+│   ├── generate/
+│   │   ├── run_generate.py        # 摘要生成入口
+│   │   ├── hpss/                  # HPSS: 层级化路径敏感摘要
+│   │   │   └── run_hpss.py
+│   │   ├── capd/                  # CAPD: 上下文感知程序去噪
+│   │   │   ├── ccr/               #   CCR: 跨模态候选检索
+│   │   │   └── sdn/               #   SDN: 语义去噪网络
+│   │   └── synthesizer/           # 最终合成器
+│   │       └── run_synthesis.py
+│   │
+│   └── evaluate/
+│       ├── run_evaluation.py      # 评估入口
+│       ├── n_gram_metrics/        # N-gram指标 (BLEU, ROUGE, METEOR)
+│       ├── semantic_metrics/      # 语义指标 (CodeBERTScore, SIDE)
+│       └── llm_eval/              # LLM评估 (deepeval)
+│           ├── run_llm_eval.py    #   封装的评估器
+│           └── deepeval_internal/ #   vendored deepeval源码
+│
+└── main.py                         # 统一入口
+```
+
 ## Usage
 
-The framework provides three main commands: `preprocess`, `generate`, and `evaluate`.
-
-### 1. Data Preprocessing
+### 1. Data Processing
 
 Process binary files and align them with source code.
 
 ```bash
-# Process a single architecture
-python main.py preprocess \
-  --bin-dir /path/to/binary/dir \
-  --src-dir /path/to/source/dir \
-  --arch-opt x64_O3 \
+# 简化命令（使用默认路径）
+python main.py process --arch x64_O3
+
+# 处理所有架构
+python main.py process --arch all
+
+# 自定义路径
+python main.py process \
+  --arch x64_O3 \
+  --bin-dir /path/to/binaries \
+  --src-dir /path/to/source \
   --output-dir /path/to/output \
   --ida-path /path/to/idat
-
-# Process all architectures (auto-detect)
-python main.py preprocess \
-  --bin-dir /path/to/binary/dir \
-  --src-dir /path/to/source/dir \
-  --arch-opt all \
-  --output-dir /path/to/output
 ```
 
 **Outputs:**
-- `baseline.pkl.gz`: Comprehensive dataset for BinT5, HexT5, CP-BCS, MiSum, ProRec
-- `dataset.pkl.gz`: CFG and Call Graph data with enriched callers/callees
+- `data/processed/<arch>/baseline.pkl.gz`: 全字段数据集
+- `data/processed/<arch>/dataset.pkl.gz`: CFG+CG 数据集
 
 ### 2. Summary Generation (Ablation Modes)
-
-The framework supports 4 ablation modes:
 
 | Mode | Description | Components |
 |------|-------------|------------|
@@ -76,41 +126,54 @@ The framework supports 4 ablation modes:
 | M4 | Full | M3 + SDN Filtering |
 
 ```bash
-# M1: Baseline (Decompiled Code only)
-python main.py generate \
-  --input /path/to/dataset.json \
-  --output /path/to/results.json \
-  --mode M1
+# 简化命令（使用默认路径）
+python main.py generate --arch x64_O3 --mode M1
+python main.py generate --arch x64_O3 --mode M2
+python main.py generate --arch x64_O3 --mode M3
+python main.py generate --arch x64_O3 --mode M4
 
-# M2: + HPSS (CFG Description)
+# 自定义输入输出
 python main.py generate \
-  --input /path/to/dataset.json \
-  --output /path/to/results.json \
-  --mode M2
-
-# M3: + HPSS + CCR (Raw Source Candidates)
-python main.py generate \
-  --input /path/to/dataset.json \
-  --output /path/to/results.json \
-  --mode M3
-
-# M4: Full (HPSS + CCR + SDN Filtering)
-python main.py generate \
-  --input /path/to/dataset.json \
-  --output /path/to/results.json \
-  --mode M4
+  --arch x64_O3 \
+  --mode M4 \
+  --input /path/to/dataset.pkl.gz \
+  --output /path/to/summary.json
 ```
+
+**Outputs:**
+- `data/generated/<arch>/<mode>/summary.json`: 最终摘要
 
 ### 3. Evaluation
 
-Evaluate the generated summaries against reference summaries.
+```bash
+# 简化命令
+python main.py evaluate --arch x64_O3 --mode M4 --ngram --semantic
+
+# 自定义路径
+python main.py evaluate \
+  --arch x64_O3 \
+  --mode M4 \
+  --input-file /path/to/summary.json \
+  --output-file /path/to/metrics.json \
+  --ngram --semantic --llmeval
+```
+
+**Outputs:**
+- `data/results/<arch>/<mode>_metrics.json`: 评估指标
+
+## Quick Start
 
 ```bash
-python main.py evaluate \
-  --input-file /path/to/results.json \
-  --output-file /path/to/metrics.json \
-  --systems generated_summary \
-  --ngram \
-  --semantic \
-  --llmeval
+# 1. 准备数据
+# 将二进制放到 data/raw/binaries/<arch>/<project>/
+# 将源代码放到 data/raw/source/<project>-src/
+
+# 2. 预处理
+python main.py process --arch x64_O3
+
+# 3. 生成摘要 (选择模式)
+python main.py generate --arch x64_O3 --mode M4
+
+# 4. 评估
+python main.py evaluate --arch x64_O3 --mode M4 --ngram --semantic
 ```

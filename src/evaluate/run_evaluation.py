@@ -21,12 +21,10 @@ from evaluate.llm_eval.run_llm_eval import LLMEvalRunner
 #  CONFIGURATION: SYSTEMS TO EVALUATE
 # ==========================================
 # Default list of system keys in the JSON to evaluate
-DEFAULT_SYSTEMS = [
-    'prorec_sum', 
-    'filter_prorec_sum', 
-    'prorec_aug_sum', 
-    'filter_prorec_aug_sum'
-]
+# For BinarySum, the generated summary is stored under 'generated_summary'
+DEFAULT_SYSTEMS = ['generated_summary']
+DEFAULT_REFERENCE_KEY = 'comment'          # Reference summary (ground truth)
+DEFAULT_CODE_KEY = 'strip_decompiled_code' # Binary code for context
 # ==========================================
 
 def load_data(file_path):
@@ -172,8 +170,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run evaluation metrics for multiple systems.")
     parser.add_argument("--input_file", type=str, required=True, help="Input JSON/JSONL file.")
     parser.add_argument("--output_file", type=str, required=True, help="Output JSONL file.")
-    parser.add_argument("--reference_key", type=str, default="comment", help="Key for reference summary.")
-    parser.add_argument("--code_key", type=str, default="source_code", help="Key for source code.")
+    parser.add_argument("--reference_key", type=str, default=DEFAULT_REFERENCE_KEY, help="Key for reference summary.")
+    parser.add_argument("--code_key", type=str, default=DEFAULT_CODE_KEY, help="Key for source/binary code.")
     
     # Systems can also be passed via command line, comma-separated
     parser.add_argument("--systems", type=str, default=None, help="Comma-separated list of system keys (overrides default).")

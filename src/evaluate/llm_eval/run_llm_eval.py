@@ -16,11 +16,31 @@ except ImportError as e:
     raise ImportError(f"Failed to import deepeval from {vendor_path}. Please ensure you have copied the deepeval source code correctly. Error: {e}")
 
 
+# Default configuration (can be overridden via environment variables or constructor)
+DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_API_KEY_HERE")
+DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://aizex.top/v1")
+DEFAULT_MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o")
+
+
 class LLMEvalRunner:
-    def __init__(self, api_key="sk-rMbghGaVULY5UMOKdJa2VfX7dPTfY4yNq2wgeFijGo4y5j3Y", base_url="https://aizex.top/v1", model_name="gpt-4o", temperature=0.1):
+    def __init__(self, api_key=None, base_url=None, model_name=None, temperature=0.1):
         """
         Initialize the LLM Evaluator with custom GEval metrics.
+        
+        Args:
+            api_key: OpenAI API key (default: from OPENAI_API_KEY env var)
+            base_url: API base URL (default: from OPENAI_BASE_URL env var)
+            model_name: Model name (default: from MODEL_NAME env var, or 'gpt-4o')
+            temperature: Temperature for generation (default: 0.1)
         """
+        # Use defaults if not provided
+        api_key = api_key or DEFAULT_API_KEY
+        base_url = base_url or DEFAULT_BASE_URL
+        model_name = model_name or DEFAULT_MODEL_NAME
+        
+        if api_key == "YOUR_API_KEY_HERE":
+            print("Warning: No API key provided. Set OPENAI_API_KEY environment variable or pass api_key parameter.")
+        
         self.model = GPTModel(
             model=model_name,
             _openai_api_key=api_key,

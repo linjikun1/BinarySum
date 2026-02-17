@@ -30,8 +30,8 @@ def main():
     config = get_config()
     os.makedirs(args.output_dir, exist_ok=True)
     
-    path_file = os.path.join(args.output_dir, "hpss_step1_paths.json")
-    hpss_file = os.path.join(args.output_dir, "hpss_step2_summary.json")
+    path_file = os.path.join(args.output_dir, "hpss_paths.json")
+    hpss_file = os.path.join(args.output_dir, "hpss_summary.json")
 
     # Step 1: Extract Paths
     if args.step in [0, 1]:

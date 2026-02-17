@@ -464,12 +464,22 @@ def process_one_arch(arch_opt, args, src_data, scripts_dir):
 
 
 def main():
+    # Default paths relative to project root
+    project_root = Path(__file__).parent.parent.parent  # BinarySum/
+    default_bin_dir = project_root / "data" / "raw" / "binary"
+    default_src_dir = project_root / "data" / "raw" / "source"
+    default_output_dir = project_root / "data" / "processed"
+    
     parser = argparse.ArgumentParser(description="Binary Analysis Pipeline")
-    parser.add_argument("--bin-dir", default="/data/linjk/data/binary", help="Directory containing binaries for specific arch (e.g. bindata/x64_O3)")
-    parser.add_argument("--src-dir", default="/data/linjk/data/source", help="Directory containing source code")
-    parser.add_argument("--arch-opt", required=True, help="Architecture and optimization level (e.g. x64_O3) or 'all' to process all found.")
-    parser.add_argument("--output-dir", default="/data/linjk/process/result", help="Base directory for output data")
-    parser.add_argument("--ida-path", default="/data/tool/ida-pro-9.1/idat", help="Path to IDA Pro executable (idat)")
+    parser.add_argument("--bin-dir", default=str(default_bin_dir), 
+                        help="Directory containing binary (default: data/raw/binary)")
+    parser.add_argument("--src-dir", default=str(default_src_dir), 
+                        help="Directory containing source code (default: data/raw/source)")
+    parser.add_argument("--arch-opt", required=True, 
+                        help="Architecture and optimization level (e.g. x64_O3) or 'all'")
+    parser.add_argument("--output-dir", default=str(default_output_dir), 
+                        help="Base directory for output (default: data/processed)")
+    parser.add_argument("--ida-path", default="idat", help="Path to IDA Pro executable (idat)")
     
     args = parser.parse_args()
     
@@ -504,7 +514,6 @@ def main():
             sys.exit(1)
             
         # Find all subdirectories that look like arch_opt (e.g. x64_O3)
-        # Simple heuristic: is directory and contains underscore (or just list all dirs)
         targets = sorted([d.name for d in base_bin_dir.iterdir() if d.is_dir() and "_" in d.name])
         logger.info(f"Found {len(targets)} architectures to process: {targets}")
     else:
