@@ -3,7 +3,7 @@ import argparse
 import sys
 import os
 import numpy as np
-from tqdm import tqdm
+import configparser
 
 # Add the project root to path to ensure imports work
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,11 +11,8 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-# Import calculators
-from evaluate.n_gram_metrics.metric_calculator import NGramMetricsCalculator
-from evaluate.semantic_metrics.code_bert_score import CodeBERTScoreCalculator
-from evaluate.semantic_metrics.side import SideCalculator
-from evaluate.llm_eval.run_llm_eval import LLMEvalRunner
+# Import evaluators (lazy loading)
+# Only import what's needed to avoid loading heavy dependencies
 
 # ==========================================
 #  CONFIGURATION: SYSTEMS TO EVALUATE
@@ -23,9 +20,33 @@ from evaluate.llm_eval.run_llm_eval import LLMEvalRunner
 # Default list of system keys in the JSON to evaluate
 # For BinarySum, the generated summary is stored under 'generated_summary'
 DEFAULT_SYSTEMS = ['generated_summary']
-DEFAULT_REFERENCE_KEY = 'comment'          # Reference summary (ground truth)
-DEFAULT_CODE_KEY = 'strip_decompiled_code' # Binary code for context
+DEFAULT_REFERENCE_KEY = 'reference'          # Reference summary (ground truth) - LLM-generated from source_code
+DEFAULT_CODE_KEY = 'source_code' # Source code for context
 # ==========================================
+
+def get_semsim_config():
+    """Read semantic similarity model paths from config.ini."""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(project_root), 'config.ini')
+    
+    if os.path.exists(config_path):
+        config.read(config_path)
+        if 'semsim' in config:
+            codebert_path = config['semsim'].get('codebert_model_path', '')
+            unixcoder_path = config['semsim'].get('unixcoder_model_path', '')
+            
+            # Convert to absolute path if relative
+            if codebert_path and not os.path.isabs(codebert_path):
+                codebert_path = os.path.join(os.path.dirname(project_root), codebert_path)
+            if unixcoder_path and not os.path.isabs(unixcoder_path):
+                unixcoder_path = os.path.join(os.path.dirname(project_root), unixcoder_path)
+            
+            return {
+                'codebert_model_path': codebert_path if codebert_path else None,
+                'unixcoder_model_path': unixcoder_path if unixcoder_path else None
+            }
+    
+    return {'codebert_model_path': None, 'unixcoder_model_path': None}
 
 def load_data(file_path):
     data = []
@@ -45,12 +66,21 @@ def run_evaluation(args):
     else:
         systems = DEFAULT_SYSTEMS
     
-    print(f"Systems to evaluate: {systems}")
-
     # Load data
-    print(f"Loading data from {args.input_file}...")
     data = load_data(args.input_file)
-    print(f"Loaded {len(data)} samples.")
+    
+    # Validate that reference fields exist in input data
+    for i, item in enumerate(data):
+        if args.reference_key not in item or not item.get(args.reference_key):
+            raise ValueError(
+                f"Sample {i}: Missing or empty '{args.reference_key}' field. "
+                f"Ensure input file contains reference fields (reference, source_code)."
+            )
+        if args.code_key not in item or not item.get(args.code_key):
+            raise ValueError(
+                f"Sample {i}: Missing or empty '{args.code_key}' field. "
+                f"Ensure input file contains source code field."
+            )
 
     # Prepare common data
     refs = [item.get(args.reference_key, "") for item in data]
@@ -62,24 +92,29 @@ def run_evaluation(args):
     sample_metrics = [{} for _ in range(len(data))]
     
     # Initialize metric calculators (lazy loading)
-    ngram_calc = NGramMetricsCalculator() if args.ngram else None
+    texsim_eval = None
+    if args.texsim:
+        from evaluate.texsim import TexSimEvaluator
+        texsim_eval = TexSimEvaluator()
     
-    cbs_calc = None
-    side_calc = None
-    if args.semantic:
-        cbs_calc = CodeBERTScoreCalculator()
-        side_calc = SideCalculator()
+    semsim_eval = None
+    if args.semsim:
+        from evaluate.semsim import SemSimEvaluator
+        semsim_config = get_semsim_config()
+        semsim_eval = SemSimEvaluator(
+            codebert_model_path=semsim_config['codebert_model_path'],
+            unixcoder_model_path=semsim_config['unixcoder_model_path']
+        )
         
-    llm_runner = None
-    if args.llmeval:
-        print("Initializing LLM Evaluator...")
-        llm_runner = LLMEvalRunner()
+    llmjudge_eval = None
+    if args.llmjudge:
+        from evaluate.llmjudge import LLMJudgeEvaluator
+        profile = getattr(args, 'profile', None)
+        llmjudge_eval = LLMJudgeEvaluator(profile=profile)
 
     # Loop through each system
     for sys_name in systems:
-        print(f"\n{'='*40}")
-        print(f"Evaluating System: {sys_name}")
-        print(f"{'='*40}")
+        print(f"\n[{sys_name}]")
 
         # Extract summaries for this system
         gens = [item.get(sys_name, "") for item in data]
@@ -95,43 +130,39 @@ def run_evaluation(args):
             if sys_name not in sample_metrics[i]:
                 sample_metrics[i][sys_name] = {}
 
-        # 1. N-Gram Metrics
-        if args.ngram:
-            print(f"[{sys_name}] Running N-Gram Metrics...")
+        # 1. Textual Similarity Metrics
+        if args.texsim:
             # compute returns (avg_scores, individual_scores_dict)
-            avg_scores, ind_scores = ngram_calc.compute(refs, gens)
+            avg_scores, ind_scores = texsim_eval.compute(refs, gens)
             
-            # Store individual scores
+            # Store individual scores (convert numpy types to Python float)
             for metric_name, scores_list in ind_scores.items():
                 for i, score in enumerate(scores_list):
-                    sample_metrics[i][sys_name][metric_name] = score
+                    sample_metrics[i][sys_name][metric_name] = float(score)
             
-            print(f"[{sys_name}] N-Gram Averages:", json.dumps(avg_scores, indent=2))
+            # Simplified output
+            print(f"  TexSim: BLEU-4={avg_scores['BLEU-4']:.2f}, METEOR={avg_scores['METEOR']:.2f}, ROUGE-L={float(avg_scores['ROUGE-L']):.2f}")
 
-        # 2. Semantic Metrics
-        if args.semantic:
-            print(f"[{sys_name}] Running Semantic Metrics...")
-            
+        # 2. Semantic Similarity Metrics
+        if args.semsim:
             # CodeBERTScore
-            print(f"[{sys_name}] Calculating CodeBERTScore...")
-            cbs_scores = cbs_calc.compute(gens, refs)
+            cbs_scores = semsim_eval.compute_code_bert_score(gens, refs)
             for i, score in enumerate(cbs_scores):
-                sample_metrics[i][sys_name]["CodeBERTScore"] = score
-            print(f"[{sys_name}] Avg CodeBERTScore: {np.mean(cbs_scores):.4f}")
+                sample_metrics[i][sys_name]["CodeBERTScore"] = float(score)
 
             # SIDE
-            print(f"[{sys_name}] Calculating SIDE...")
-            side_scores = side_calc.compute(gens, codes)
+            side_scores = semsim_eval.compute_side(gens, codes)
             for i, score in enumerate(side_scores):
-                sample_metrics[i][sys_name]["SIDE"] = score
-            print(f"[{sys_name}] Avg SIDE: {np.mean(side_scores):.4f}")
+                sample_metrics[i][sys_name]["SIDE"] = float(score)
+            
+            print(f"  SemSim: CodeBERTScore={np.mean(cbs_scores):.4f}, SIDE={np.mean(side_scores):.4f}")
 
-        # 3. LLM Eval
-        if args.llmeval:
-            print(f"[{sys_name}] Running LLM Evaluation...")
+        # 3. LLM-as-a-Judge
+        if args.llmjudge:
             # We process LLM eval sequentially
             # We can skip if gen is empty
-            for i in tqdm(range(len(data)), desc=f"[{sys_name}] LLM Eval"):
+            # for i in range(len(data)):
+            for i in range(2):
                 gen_text = gens[i]
                 code_text = codes[i]
                 
@@ -139,14 +170,14 @@ def run_evaluation(args):
                     continue
                     
                 try:
-                    res = llm_runner.evaluate_single(gen_text, code_text)
+                    res = llmjudge_eval.evaluate_single(gen_text, code_text)
                     sample_metrics[i][sys_name].update(res)
                 except Exception as e:
                     print(f"Error evaluating sample {i}: {e}")
 
     # Save results
-    print(f"\nSaving detailed results to {args.output_file}...")
     with open(args.output_file, 'w', encoding='utf-8') as f:
+        result = []
         for i, item in enumerate(data):
             # Create output item
             output_item = item.copy()
@@ -161,25 +192,26 @@ def run_evaluation(args):
             for sys_name, metrics_dict in sample_metrics[i].items():
                 if metrics_dict: # Only add if we calculated something
                     output_item["metrics"][sys_name] = metrics_dict
-            
-            f.write(json.dumps(output_item) + "\n")
+            result.append(output_item)
+        json.dump(result, f, indent=4)
 
-    print("Done.")
+    print(f"\nResults saved to: {args.output_file}")
 
 def main():
     parser = argparse.ArgumentParser(description="Run evaluation metrics for multiple systems.")
-    parser.add_argument("--input_file", type=str, required=True, help="Input JSON/JSONL file.")
+    parser.add_argument("--input_file", type=str, required=True, help="Input JSON/JSONL file with generated_summary, reference, source_code fields.")
     parser.add_argument("--output_file", type=str, required=True, help="Output JSONL file.")
-    parser.add_argument("--reference_key", type=str, default=DEFAULT_REFERENCE_KEY, help="Key for reference summary.")
-    parser.add_argument("--code_key", type=str, default=DEFAULT_CODE_KEY, help="Key for source/binary code.")
+    parser.add_argument("--reference_key", type=str, default=DEFAULT_REFERENCE_KEY, help="Key for reference summary (default: reference).")
+    parser.add_argument("--code_key", type=str, default=DEFAULT_CODE_KEY, help="Key for source code (default: source_code).")
     
     # Systems can also be passed via command line, comma-separated
     parser.add_argument("--systems", type=str, default=None, help="Comma-separated list of system keys (overrides default).")
     
     # Selection flags
-    parser.add_argument("--ngram", action="store_true", help="Run N-Gram metrics (BLEU, METEOR, ROUGE).")
-    parser.add_argument("--semantic", action="store_true", help="Run Semantic metrics (CodeBERTScore, SIDE).")
-    parser.add_argument("--llmeval", action="store_true", help="Run LLM-based evaluation.")
+    parser.add_argument("--texsim", action="store_true", help="Run Textual Similarity metrics (BLEU, METEOR, ROUGE).")
+    parser.add_argument("--semsim", action="store_true", help="Run Semantic Similarity metrics (CodeBERTScore, SIDE).")
+    parser.add_argument("--llmjudge", action="store_true", help="Run LLM-as-a-Judge evaluation.")
+    parser.add_argument("--profile", type=str, default=None, help="OpenAI config profile for LLM eval (default, gpt, etc.).")
     
     args = parser.parse_args()
     run_evaluation(args)

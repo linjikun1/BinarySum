@@ -2,6 +2,7 @@ import json
 from tqdm import tqdm
 from src.core.filter_client import CodeFilter
 
+
 def extract_probed_code(probed_sources):
     strip_len = len('<asm_token>\n')
     processed_probed_sources = []
@@ -13,6 +14,7 @@ def extract_probed_code(probed_sources):
             pps = ps[asm_idx + strip_len:]
             processed_probed_sources.append(pps)
     return processed_probed_sources
+
 
 def run_filtering_pipeline(input_file, output_file, config):
     print(f"Loading data from {input_file}...")
@@ -44,9 +46,6 @@ def run_filtering_pipeline(input_file, output_file, config):
         else:
             code = item['codeinfo']['decompiled_code']
             
-        if not code:
-            continue
-            
         raw_probed_srcs = extract_probed_code(item.get('probed_sources', []))
         stats["total_candidates"] += len(raw_probed_srcs)
 
@@ -63,7 +62,8 @@ def run_filtering_pipeline(input_file, output_file, config):
              s2_result = code_filter.filter_second(code, stage1_survivors)
 
         raw_features = s2_result.get('extracted_features', [])
-        valid_features = [feat for feat in raw_features if feat in code]
+        # Ensure all features are strings (LLM may return non-string types)
+        valid_features = [str(feat) for feat in raw_features if str(feat) in code]
         has_features = len(valid_features) > 0
         extracted_features = valid_features
 
@@ -123,7 +123,16 @@ def run_filtering_pipeline(input_file, output_file, config):
     print(f"Check Sum:      {total_filtered} / {stats['total_candidates']}")
     print("="*40)
 
+    # Prepare output: only filtered results, no original data
+    output_data = []
+    for item in probed_data:
+        output_data.append({
+            'filter_strong': item.get('filter_strong', []),
+            'filter_backup': item.get('filter_backup', []),
+            'filter_uncertain': item.get('filter_uncertain', [])
+        })
+    
     print(f"Saving filtered results to {output_file}...")
     with open(output_file, 'w') as f:
-        json.dump(probed_data, f, indent=4, ensure_ascii=False)
+        json.dump(output_data, f, indent=4, ensure_ascii=False)
     print("Done.")

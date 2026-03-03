@@ -133,17 +133,16 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# IDE
-.idea/
-.vscode/
-.cursor/
-
 # Project specific
-dataset/
-output/
+config.ini
+data/
+.deepeval/
+src/evaluate/semsim/models/
+src/evaluate/texsim/data/
+src/evaluate/texsim/meteor-1.5.jar
 tmp/
 *.pkl
 *.pkl.gz
 *.json.gz
 *.log
-src/evaluate/n_gram_metrics/Metrics/meteor/data/paraphrase-en.gz
+*.json

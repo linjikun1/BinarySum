@@ -1,0 +1,56 @@
+# BinarySum Configuration Template
+# Copy this file to config.ini and fill in your API keys
+
+# ========================================
+# OpenAI API Configuration
+# Add your profile sections below
+# ========================================
+[default]
+api_key = YOUR_API_KEY_HERE
+base_url = https://api.openai.com/v1
+model_name = gpt-4
+
+# Example: Custom API provider
+# [aizex]
+# api_key = YOUR_API_KEY_HERE
+# base_url = https://aizex.top/v1
+# model_name = gpt-4
+
+# ========================================
+# Generation Parameters
+# ========================================
+[generation_hpss]
+temperature = 0.1
+max_tokens = 4096
+
+[generation_synthesis]
+temperature = 0.1
+max_tokens = 4096
+
+[generation_sdn]
+temperature = 0.1
+max_tokens = 4096
+
+# ========================================
+# CCR (Cross-modal Code Retrieval) Configuration
+# Training takes 10+ hours on 4x A100-80G GPUs
+# ========================================
+[ccr]
+# Architecture tag (e.g., x64_O2, x64_O3, arm_O2)
+arch = x64_O2
+
+# Model paths (relative to ccr/save/<arch>/ or absolute paths)
+casp_model = CASP/cg-casp-moco-lmpa-c-only
+prober_model = src_prober_codellama-13b-last1unfreeze
+
+# External model paths (required for training)
+asm_tokenizer_path = models/longcodeart
+src_model_path = models/CodeLlama-13b-hf
+
+# Generation parameters
+max_new_tokens = 60
+num_return_sequences = 5
+temperature = 1.0
+top_k = 500
+top_p = 0.5
+batch_size = 2

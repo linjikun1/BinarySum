@@ -2,21 +2,24 @@ import json
 import os
 import sys
 import argparse
+import gzip
+import pickle
 from tqdm import tqdm
+
+# Add src directory to path for config import
+src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 
 # Add current directory (synthesizer) to sys.path to ensure local 'core' module can be imported
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
+# Import after sys.path is set
+from config import get_module_config
 from core.generator import OpenAIFinalSummarizer
 
-def get_config():
-    return {
-        "api_key": os.environ.get("OPENAI_API_KEY", "YOUR_API_KEY_HERE"),
-        "base_url": os.environ.get("OPENAI_BASE_URL", "https://aizex.top/v1"),
-        "model_name": "gpt-5"
-    }
 
 def extract_snippets(item, mode):
     """
@@ -60,25 +63,34 @@ def extract_snippets(item, mode):
             
     return snippets
 
-def run_synthesis(input_file, output_file, mode):
+
+def run_synthesis(generated_file, output_file, mode):
     """
     Run final summary synthesis based on mode.
     
-    Mode -> Context Mapping:
-    - M1: Decompiled code only
-    - M2: Decompiled code + CFG description
-    - M3: Decompiled code + CFG description + Raw snippets
-    - M4: Decompiled code + CFG description + Filtered snippets
+    Args:
+        generated_file: JSON with all required context for synthesis
+            - M1: contains strip_decompiled_code, reference, source_code
+            - M2: additionally contains cfg_summary
+            - M3: additionally contains cfg_summary, probed_sources
+            - M4: additionally contains cfg_summary, filter_strong/backup/uncertain
+        output_file: Output JSON path
+        mode: M1/M2/M3/M4
+    
+    Output format: Only saves generated results with reference for evaluation.
     """
-    print(f"Loading data from {input_file}...")
+    print(f"Loading data from {generated_file}...")
     try:
-        with open(input_file, 'r') as f:
+        with open(generated_file, 'r') as f:
             data = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Input file {input_file} not found.")
+    except Exception as e:
+        print(f"Error loading data: {e}")
         return
+    
+    print(f"Loaded {len(data)} samples for synthesis.")
 
-    config = get_config()
+    # Use unified module config
+    config = get_module_config("synthesis")
     summarizer = OpenAIFinalSummarizer(config['api_key'], config['model_name'], config['base_url'])
 
     # Determine if CFG should be used (M2, M3, M4)
@@ -89,13 +101,12 @@ def run_synthesis(input_file, output_file, mode):
     print(f"  - Use Snippets: {mode in ['M3', 'M4']}")
     print(f"  - Snippet Filter: {'SDN' if mode == 'M4' else 'None'}")
     
+    # Output: Only generated results
+    results = []
+    
     for item in tqdm(data, total=len(data), desc="Generating Summaries"):
         # 1. Get Decompiled Code
         decom_code = item.get('strip_decompiled_code') or item.get('codeinfo', {}).get('decompiled_code', "")
-        
-        if not decom_code:
-            item['generated_summary'] = ""
-            continue
 
         # 2. Get CFG Summary (if mode requires)
         cfg_desc = item.get('cfg_summary', "") if use_cfg else None
@@ -106,18 +117,27 @@ def run_synthesis(input_file, output_file, mode):
         # 4. Generate
         summary = summarizer.generate_summary(decom_code, cfg_desc, snippets)
         
-        # Save result with mode tag
-        item['generation_mode'] = mode
-        item['generated_summary'] = summary
+        # Save results with reference facts for evaluation
+        # reference: LLM-generated summary from source_code (ground truth for evaluation)
+        # source_code: original source code for semantic comparison
+        result = {
+            'generation_mode': mode,
+            'generated_summary': summary,
+            'reference': item.get('reference', ''),
+            'source_code': item.get('source_code', '')
+        }
+        
+        results.append(result)
 
     print(f"\nSaving results to {output_file}...")
     with open(output_file, 'w') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+        json.dump(results, f, indent=4, ensure_ascii=False)
     print("Done.")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run Final Summary Synthesis")
-    parser.add_argument("--input", type=str, required=True, help="Input JSON file")
+    parser.add_argument("--input", type=str, required=True, help="Input JSON file with all required context")
     parser.add_argument("--output", type=str, required=True, help="Output JSON file")
     parser.add_argument("--mode", choices=['M1', 'M2', 'M3', 'M4'], default='M1',
                         help="Ablation mode: M1(Baseline), M2(+HPSS), M3(+HPSS+CCR), M4(Full)")
@@ -125,6 +145,7 @@ def main():
     args = parser.parse_args()
     
     run_synthesis(args.input, args.output, args.mode)
+
 
 if __name__ == "__main__":
     main()

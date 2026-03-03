@@ -23,6 +23,9 @@ PROCESS_SCRIPT = SRC_DIR / "process" / "run_process.py"
 GENERATE_SCRIPT = SRC_DIR / "generate" / "run_generate.py"
 EVAL_SCRIPT = SRC_DIR / "evaluate" / "run_evaluation.py"
 
+# Default config profile
+DEFAULT_PROFILE = "gpt"
+
 
 def ensure_dirs():
     """Ensure data directories exist."""
@@ -81,6 +84,7 @@ def run_process(args):
     print(f"Output: {output_dir}/{args.arch}/dataset.pkl.gz")
     print(f"{'='*50}")
 
+
 def run_generate(args):
     """
     Run summary generation pipeline based on mode (M1-M4).
@@ -98,6 +102,10 @@ def run_generate(args):
     
     mode = args.mode
     arch = args.arch
+    profile = getattr(args, 'profile', DEFAULT_PROFILE)
+    
+    # Set config profile for subprocess calls
+    os.environ["BINARYSUM_CONFIG_PROFILE"] = profile
     
     # Determine input file
     if args.input:
@@ -117,6 +125,7 @@ def run_generate(args):
     
     print(f"\n{'='*50}")
     print(f"[Generate] Mode: {mode} | Architecture: {arch}")
+    print(f"Config Profile: {profile}")
     print(f"{'='*50}")
     print(f"Input: {input_file}")
     print(f"Work Dir: {work_dir}")
@@ -129,7 +138,8 @@ def run_generate(args):
         "--input", input_file,
         "--output", output_file,
         "--mode", mode,
-        "--work-dir", str(work_dir)
+        "--work-dir", str(work_dir),
+        "--profile", profile
     ]
     
     subprocess.check_call(cmd)
@@ -138,6 +148,7 @@ def run_generate(args):
     print(f"Generation Complete!")
     print(f"Output: {output_file}")
     print(f"{'='*50}")
+
 
 def run_eval(args):
     """
@@ -150,6 +161,10 @@ def run_eval(args):
     
     arch = args.arch
     mode = args.mode
+    profile = getattr(args, 'profile', DEFAULT_PROFILE)
+    
+    # Set config profile for subprocess calls (used by llm_eval)
+    os.environ["BINARYSUM_CONFIG_PROFILE"] = profile
     
     # Determine input file
     if args.input_file:
@@ -163,11 +178,15 @@ def run_eval(args):
     else:
         output_file = str(RESULTS_DIR / arch / f"{mode}_metrics.json")
     
+    # Determine reference file (for comment/source_code if not in input)
+    reference_file = str(GENERATED_DIR / arch / "shared" / "test_filtered.json")
+    
     # Ensure output directory exists
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     
     print(f"\n{'='*50}")
     print(f"[Evaluate] Mode: {mode} | Architecture: {arch}")
+    print(f"Config Profile: {profile}")
     print(f"{'='*50}")
     print(f"Input: {input_file}")
     print(f"Output: {output_file}")
@@ -180,12 +199,13 @@ def run_eval(args):
     ]
     if args.systems:
         cmd.extend(["--systems", args.systems])
-    if args.ngram:
-        cmd.append("--ngram")
-    if args.semantic:
-        cmd.append("--semantic")
-    if args.llmeval:
-        cmd.append("--llmeval")
+    if args.texsim:
+        cmd.append("--texsim")
+    if args.semsim:
+        cmd.append("--semsim")
+    if args.llmjudge:
+        cmd.append("--llmjudge")
+        cmd.extend(["--profile", profile])
         
     subprocess.check_call(cmd)
     
@@ -193,6 +213,7 @@ def run_eval(args):
     print(f"Evaluation Complete!")
     print(f"Output: {output_file}")
     print(f"{'='*50}")
+
 
 def main():
     parser = argparse.ArgumentParser(prog="binarysum", description="BinarySum: Binary Code Summary Generation Framework")
@@ -218,6 +239,7 @@ def main():
                             help="Ablation mode: M1(Baseline), M2(+HPSS), M3(+HPSS+CCR), M4(Full)")
     parser_gen.add_argument("--input", help="Input dataset file (default: data/processed/<arch>/dataset.pkl.gz)")
     parser_gen.add_argument("--output", help="Output result file (default: data/generated/<arch>/<mode>/summary.json)")
+    parser_gen.add_argument("--profile", default=DEFAULT_PROFILE, help="OpenAI config profile")
     parser_gen.set_defaults(func=run_generate)
     
     # ========================================
@@ -230,9 +252,10 @@ def main():
     parser_eval.add_argument("--input-file", help="Input file (default: data/generated/<arch>/<mode>/summary.json)")
     parser_eval.add_argument("--output-file", help="Output file (default: data/results/<arch>/<mode>_metrics.json)")
     parser_eval.add_argument("--systems", help="Comma-separated list of systems to evaluate")
-    parser_eval.add_argument("--ngram", action="store_true", help="Run N-Gram metrics")
-    parser_eval.add_argument("--semantic", action="store_true", help="Run Semantic metrics")
-    parser_eval.add_argument("--llmeval", action="store_true", help="Run LLM evaluation")
+    parser_eval.add_argument("--texsim", action="store_true", help="Run Textual Similarity metrics (BLEU, METEOR, ROUGE)")
+    parser_eval.add_argument("--semsim", action="store_true", help="Run Semantic Similarity metrics (CodeBERTScore, SIDE)")
+    parser_eval.add_argument("--llmjudge", action="store_true", help="Run LLM-as-a-Judge evaluation")
+    parser_eval.add_argument("--profile", default=DEFAULT_PROFILE, help="OpenAI config profile")
     parser_eval.set_defaults(func=run_eval)
     
     args = parser.parse_args()
@@ -241,6 +264,7 @@ def main():
         args.func(args)
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()
