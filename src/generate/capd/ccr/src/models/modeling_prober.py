@@ -226,6 +226,7 @@ class SrcProberForConditionalGeneration(PreTrainedModel):
         longelm_graph_attention_mask: Optional[torch.Tensor] = None,
         longelm_relative_node_positions: Optional[torch.Tensor] = None,
         gnn_edge_index: Optional[torch.LongTensor] = None,
+        gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
 
@@ -280,7 +281,8 @@ class SrcProberForConditionalGeneration(PreTrainedModel):
                 # [N_total_nodes, gnn_output_dim]
                 reinforced_node_features = self.gnn_encoder(
                     x=initial_node_features,
-                    edge_index=gnn_edge_index
+                    edge_index=gnn_edge_index,
+                    edge_type=gnn_edge_type
                 )
                 
                 # [Batch_size, gnn_output_dim]
@@ -404,6 +406,7 @@ class SrcProberForConditionalGeneration(PreTrainedModel):
         longelm_graph_attention_mask=None,
         longelm_relative_node_positions=None,
         gnn_edge_index=None,
+        gnn_edge_type=None,
         gnn_batch_index=None,
         gnn_target_node_indices=None,
         # asm_input_ids=None,
@@ -463,6 +466,7 @@ class SrcProberForConditionalGeneration(PreTrainedModel):
                 "longelm_graph_attention_mask": longelm_graph_attention_mask,
                 "longelm_relative_node_positions": longelm_relative_node_positions,
                 "gnn_edge_index": gnn_edge_index,
+                "gnn_edge_type": gnn_edge_type,
                 "gnn_batch_index": gnn_batch_index,
                 "gnn_target_node_indices": gnn_target_node_indices,
                 # "asm_input_ids": asm_input_ids,
@@ -492,6 +496,7 @@ class SrcProberForConditionalGeneration(PreTrainedModel):
             "longelm_graph_attention_mask",
             "longelm_relative_node_positions",
             "gnn_edge_index",
+            "gnn_edge_type",
             "gnn_batch_index",
             "gnn_target_node_indices",
         }

@@ -95,30 +95,74 @@ class CASPOutput(ModelOutput):  # TODO: modify this part later
 
 # --- 2. 添加 GNN 模块定义 ---
 class CG_GNN_Encoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers=2, heads=4):
-        super().__init__()
-        self.convs = nn.ModuleList()
-        self.convs.append(GATv2Conv(input_dim, hidden_dim, heads=heads))
-        for _ in range(num_layers - 1):
-            self.convs.append(GATv2Conv(hidden_dim * heads, hidden_dim, heads=heads))
-        
-        # GNN 的输出维度将是 hidden_dim * heads
-        self.output_dim = hidden_dim * heads
+    """
+    过程间图注意力增强模型 (IP-GATv2)。
+    为 caller(type=0) 和 callee(type=1) 分配独立的 GATv2Conv 通道，
+    实现基于角色的非对称拓扑注能。
+    """
 
-    def forward(self, x, edge_index):
-        # x: [N_total_nodes, input_dim] (来自 Longelm 的初始特征)
-        # edge_index: [2, Num_Edges]
-        
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
-            # 最后一层之前应用激活和 dropout
-            if i < len(self.convs) - 1: 
-                x = nn.functional.elu(x)
-                x = nn.functional.dropout(x, p=0.1, training=self.training)
-            
-        # 返回所有节点强化后的特征
-        # x shape: [N_total_nodes, hidden_dim * heads]
-        return x
+    def __init__(self, input_dim, hidden_dim, num_layers=2, heads=4, dropout=0.1):
+        super().__init__()
+        assert num_layers >= 1
+        self.num_layers = num_layers
+        self.dropout = dropout
+
+        # 为每一层分别建立 caller / callee 两个独立通道
+        self.caller_layers = nn.ModuleList()
+        self.callee_layers = nn.ModuleList()
+
+        in_dim = input_dim
+        for i in range(num_layers):
+            is_last = (i == num_layers - 1)
+            # 最后一层不拼接多头，直接输出 hidden_dim
+            self.caller_layers.append(
+                GATv2Conv(in_dim, hidden_dim, heads=heads, concat=not is_last, dropout=dropout)
+            )
+            self.callee_layers.append(
+                GATv2Conv(in_dim, hidden_dim, heads=heads, concat=not is_last, dropout=dropout)
+            )
+            in_dim = hidden_dim * heads if not is_last else hidden_dim
+
+        # W_proj: 对两流输出进行线性投影 (hidden_dim -> hidden_dim)
+        self.proj = nn.Linear(hidden_dim, hidden_dim)
+        # 残差投影: 将 x 的维度对齐到 hidden_dim 才能相加
+        # 对应公式中的 h_i^{(l)} 项（三分支残差就是此处）
+        self.residual_proj = nn.Linear(input_dim, hidden_dim, bias=False)
+        self.activation = nn.ELU()
+        self.output_dim = hidden_dim
+
+    def forward(self, x, edge_index, edge_type):
+        """
+        x          : [N_total_nodes, input_dim]        --- 对应公式中的 h_i^{(l)}
+        edge_index : [2, Num_Edges]
+        edge_type  : [Num_Edges], 0=caller->target, 1=callee->target
+        """
+        # 按边类型拆分 edge_index，分别对应 N_i^{caller} 和 N_i^{callee}
+        mask_caller = (edge_type == 0)
+        mask_callee = (edge_type == 1)
+        edge_index_caller = edge_index[:, mask_caller]
+        edge_index_callee = edge_index[:, mask_callee]
+
+        h = x
+        for i in range(self.num_layers):
+            is_last = (i == self.num_layers - 1)
+
+            # 双流独立汇聚：对应公式中的 z_i^{caller} 和 z_i^{callee}
+            h_caller = self.caller_layers[i](h, edge_index_caller)  # [N, hidden_dim]
+            h_callee = self.callee_layers[i](h, edge_index_callee)  # [N, hidden_dim]
+
+            if is_last:
+                # 三分支语义融合：对应公式 h_i^{(l+1)} = ELU(W_proj(z_caller + z_callee + h_i^{(l)}))
+                # residual_proj 将输入维度对齐到 hidden_dim
+                h_residual = self.residual_proj(x)  # 始终用最原始的 x 作为残差
+                h = self.activation(self.proj(h_caller + h_callee) + h_residual)
+            else:
+                # 中间层：相加后 + 激活 + dropout
+                h = h_caller + h_callee
+                h = self.activation(h)
+                h = nn.functional.dropout(h, p=self.dropout, training=self.training)
+
+        return h
 # --- 结束添加 ---
 
 class DualEncoderModel(PreTrainedModel):
@@ -273,6 +317,7 @@ class DualEncoderModel(PreTrainedModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
+        gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         # --- 结束修改签名 ---
@@ -315,10 +360,11 @@ class DualEncoderModel(PreTrainedModel):
         # 假设 LongelmModel 的 pooler_output 是元组的第二个元素
         initial_node_features = longelm_outputs[1] # [N_total_nodes, longelm_hidden_dim]
         
-        # 步骤 2: GNN 模块进行上下文强化
+        # 步骤 2: GNN 模块进行上下文强化 (利用 caller/callee 异构边类型)
         reinforced_node_features = self.gnn_encoder(
             x=initial_node_features,
-            edge_index=gnn_edge_index
+            edge_index=gnn_edge_index,
+            edge_type=gnn_edge_type
         ) # [N_total_nodes, gnn_output_dim]
         
         # 步骤 3: 提取 Target 节点的特征
@@ -505,6 +551,7 @@ class MomentumDualEncoderModel(DualEncoderModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
+        gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         
@@ -551,7 +598,8 @@ class MomentumDualEncoderModel(DualEncoderModel):
         initial_node_features_q = longelm_outputs_q[1]
         reinforced_node_features_q = self.gnn_encoder(
             x=initial_node_features_q,
-            edge_index=gnn_edge_index
+            edge_index=gnn_edge_index,
+            edge_type=gnn_edge_type
         )
         target_features_q = reinforced_node_features_q.index_select(0, gnn_target_node_indices)
         assembly_embeds = self.assembly_projection(target_features_q)
@@ -611,7 +659,8 @@ class MomentumDualEncoderModel(DualEncoderModel):
             initial_node_features_k = longelm_outputs_k[1]
             reinforced_node_features_k = self.gnn_encoder_k(
                 x=initial_node_features_k,
-                edge_index=gnn_edge_index
+                edge_index=gnn_edge_index,
+                edge_type=gnn_edge_type
             )
             target_features_k = reinforced_node_features_k.index_select(0, gnn_target_node_indices)
             k2 = self.assembly_projection(target_features_k) # 遵循原始代码，使用共享投影层
@@ -694,6 +743,7 @@ class DualEncoderRanker(MomentumDualEncoderModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
+        gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         # ------------------
@@ -747,7 +797,8 @@ class DualEncoderRanker(MomentumDualEncoderModel):
         
         reinforced_node_features = self.gnn_encoder(
             x=initial_node_features,
-            edge_index=gnn_edge_index
+            edge_index=gnn_edge_index,
+            edge_type=gnn_edge_type
         )
         
         target_features = reinforced_node_features.index_select(0, gnn_target_node_indices)

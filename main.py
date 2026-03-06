@@ -24,7 +24,7 @@ GENERATE_SCRIPT = SRC_DIR / "generate" / "run_generate.py"
 EVAL_SCRIPT = SRC_DIR / "evaluate" / "run_evaluation.py"
 
 # Default config profile
-DEFAULT_PROFILE = "gpt"
+DEFAULT_PROFILE = "qwen"
 
 
 def ensure_dirs():

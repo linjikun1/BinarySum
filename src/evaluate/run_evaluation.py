@@ -19,7 +19,9 @@ if project_root not in sys.path:
 # ==========================================
 # Default list of system keys in the JSON to evaluate
 # For BinarySum, the generated summary is stored under 'generated_summary'
-DEFAULT_SYSTEMS = ['generated_summary']
+DEFAULT_SYSTEMS = ['LLM-Zero']
+# For evaluating multiple baselines, use:
+# DEFAULT_SYSTEMS = ['HexT5', 'BinT5', 'CP-BCS', 'MiSum', 'ProRec']
 DEFAULT_REFERENCE_KEY = 'reference'          # Reference summary (ground truth) - LLM-generated from source_code
 DEFAULT_CODE_KEY = 'source_code' # Source code for context
 # ==========================================
@@ -160,9 +162,9 @@ def run_evaluation(args):
         # 3. LLM-as-a-Judge
         if args.llmjudge:
             # We process LLM eval sequentially
-            # We can skip if gen is empty
-            # for i in range(len(data)):
-            for i in range(2):
+            llm_scores = {'accuracy': [], 'coverage': [], 'effectiveness': []}
+            for i in range(len(data)):
+            # for i in range(20):
                 gen_text = gens[i]
                 code_text = codes[i]
                 
@@ -172,8 +174,19 @@ def run_evaluation(args):
                 try:
                     res = llmjudge_eval.evaluate_single(gen_text, code_text)
                     sample_metrics[i][sys_name].update(res)
+                    print(f"  LLMJudge [{i}]: accuracy={res['accuracy']:.2f}, coverage={res['coverage']:.2f}, effectiveness={res['effectiveness']:.2f}")
+                    for k in llm_scores:
+                        if k in res:
+                            llm_scores[k].append(res[k])
                 except Exception as e:
                     print(f"Error evaluating sample {i}: {e}")
+            
+            # Print average scores
+            if any(llm_scores.values()):
+                avg_acc = np.mean(llm_scores['accuracy']) if llm_scores['accuracy'] else float('nan')
+                avg_cov = np.mean(llm_scores['coverage']) if llm_scores['coverage'] else float('nan')
+                avg_eff = np.mean(llm_scores['effectiveness']) if llm_scores['effectiveness'] else float('nan')
+                print(f"  LLMJudge Avg: accuracy={avg_acc:.2f}, coverage={avg_cov:.2f}, effectiveness={avg_eff:.2f}")
 
     # Save results
     with open(args.output_file, 'w', encoding='utf-8') as f:

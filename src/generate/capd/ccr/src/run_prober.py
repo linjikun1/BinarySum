@@ -463,6 +463,7 @@ def main():
                 'longelm_graph_attention_mask': assembly_inputs['longelm_graph_attention_mask'],
                 'longelm_relative_node_positions': assembly_inputs['longelm_relative_node_positions'],
                 'gnn_edge_index': assembly_inputs['gnn_edge_index'],
+                'gnn_edge_type': assembly_inputs['gnn_edge_type'],
                 'gnn_batch_index': assembly_inputs['gnn_batch_index'],
                 'gnn_target_node_indices': assembly_inputs['gnn_target_node_indices'],
             }
@@ -490,6 +491,7 @@ def main():
                 'longelm_relative_node_positions': assembly_inputs['longelm_relative_node_positions'],
                 
                 'gnn_edge_index': assembly_inputs['gnn_edge_index'],
+                'gnn_edge_type': assembly_inputs['gnn_edge_type'],
                 'gnn_batch_index': assembly_inputs['gnn_batch_index'],
                 'gnn_target_node_indices': assembly_inputs['gnn_target_node_indices'],
             }

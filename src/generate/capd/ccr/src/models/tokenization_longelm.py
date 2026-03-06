@@ -43,7 +43,7 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
                 remaining_data_dep.append((source_node_id, target_node_id))
 
         # graph construction
-        graph = nx.Graph()
+        graph = nx.DiGraph()
         graph.add_nodes_from(range(block_count))
         graph.add_edges_from(remaining_data_dep)
 
@@ -168,6 +168,7 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
         
         # 2. GNN 图结构输入
         edge_index_list = []       # 存储 (src, dst) 边元组
+        edge_type_list = []
         target_node_indices = []   # 存储每个样本的 target 节点在批次中的全局索引
         batch_indices = []         # 存储每个节点属于哪个原始样本
         
@@ -193,19 +194,19 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
             target_node_indices.append(target_global_idx)
 
             # 3. 为 GNN 创建图结构 (边)
-            # 边: Callers <-> Target (双向)
+            # 边: Callers -> Target (双向)
             for j in range(len(caller_nodes)):
                 caller_local_idx = j + 1
                 caller_global_idx = node_counter + caller_local_idx
                 edge_index_list.append((caller_global_idx, target_global_idx))
-                edge_index_list.append((target_global_idx, caller_global_idx)) # 添加反向边
+                edge_type_list.append(0)
             
-            # 边: Target <-> Callees (双向)
+            # 边: Target -> Callees (双向)
             for j in range(len(callee_nodes)):
                 callee_local_idx = j + 1 + len(caller_nodes)
                 callee_global_idx = node_counter + callee_local_idx
-                edge_index_list.append((target_global_idx, callee_global_idx))
-                edge_index_list.append((callee_global_idx, target_global_idx)) # 添加反向边
+                edge_index_list.append((callee_global_idx, target_global_idx))
+                edge_type_list.append(1)
 
             # 4. 处理所有节点，为 Longelm 准备输入
             for node in nodes_in_current_graph:
@@ -219,6 +220,8 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
 
         # --- 批处理结束，开始将所有数据堆叠成张量 --- 
 
+        if not longelm_inputs_list:
+            return None
 
         # 1. 堆叠 Longelm/CodeArt 的输入
         final_input_ids = torch.stack([d['input_ids'] for d in longelm_inputs_list])
@@ -229,8 +232,10 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
         # 2. 堆叠 GNN 的输入
         if edge_index_list:
             final_edge_index = torch.tensor(edge_index_list, dtype=torch.long).t().contiguous()
+            final_edge_type = torch.tensor(edge_type_list, dtype=torch.long)
         else:
             final_edge_index = torch.empty((2, 0), dtype=torch.long)
+            final_edge_type = torch.empty((0,), dtype=torch.long)
             
         final_batch_indices = torch.cat(batch_indices)
         final_target_node_indices = torch.tensor(target_node_indices, dtype=torch.long)
@@ -243,6 +248,7 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
             'longelm_relative_node_positions': final_rel_pos,
             
             'gnn_edge_index': final_edge_index,
+            'gnn_edge_type': final_edge_type,
             'gnn_batch_index': final_batch_indices,
             'gnn_target_node_indices': final_target_node_indices,
             
