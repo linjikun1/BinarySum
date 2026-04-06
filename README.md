@@ -37,7 +37,10 @@ BinarySum/
 │   │   └── <arch>/
 │   │       ├── intermediate/           # IDA 中间结果 (可缓存)
 │   │       ├── baseline.pkl.gz         # 全字段数据集
-│   │       └── dataset.pkl.gz          # CFG+CG 数据集
+│   │       └── dataset.pkl.gz          # CFG+CG 数据集 (含 reference 字段)
+│   │
+│   ├── need_to_gen_augref.pkl.gz       # augref 中间产物：去重后待生成集合
+│   └── final_ref.pkl.gz               # augref 中间产物：LLM 生成的参考摘要
 │   │
 │   ├── generated/                      # 摘要生成结果
 │   │   └── <arch>/
@@ -67,6 +70,7 @@ BinarySum/
 ├── src/
 │   ├── process/
 │   │   ├── run_process.py              # 数据处理入口
+│   │   ├── gen_augref.py               # LLM 参考摘要生成入口
 │   │   ├── scripts/                    # IDA/源码提取脚本
 │   │   └── lib/                        # 分析库
 │   │
@@ -101,8 +105,9 @@ BinarySum/
 ```bash
 # 1. 准备数据: 将二进制放到 data/raw/binaries/<arch>/<project>/
 # 2. 预处理: python main.py process --arch x64_O2
-# 3. 生成摘要: python main.py generate --arch x64_O2 --mode M4
-# 4. 评估: python main.py evaluate --arch x64_O2 --mode M4 --texsim --semsim
+# 3. 生成参考摘要 (LLM): python main.py augref
+# 4. 生成摘要: python main.py generate --arch x64_O2 --mode M4
+# 5. 评估: python main.py evaluate --arch x64_O2 --mode M4 --texsim --semsim
 ```
 
 ### 1. Data Processing
@@ -129,7 +134,29 @@ python main.py process \
 - `data/processed/<arch>/baseline.pkl.gz`: baseline 数据集
 - `data/processed/<arch>/dataset.pkl.gz`: CFG+CG 数据集
 
-### 2. Summary Generation
+### 2. Augmented Reference Generation
+
+Process 完成后，可选地为所有架构的函数 source code 用 LLM 生成高质量参考摘要，并写回 `reference` 字段。
+
+```bash
+# 全流程一次跑完（collect → generate → apply）
+python main.py augref
+
+# 单独执行某步（支持断点续跑）
+python main.py augref --step collect
+python main.py augref --step generate
+python main.py augref --step apply
+
+# 自定义路径或 profile
+python main.py augref --processed-dir /path/to/processed --work-dir /path/to/work --profile gpt
+```
+
+**Steps:**
+| Step | Description | Input | Output |
+|------|-------------|-------|--------|
+| collect | 聚合所有架构 dataset.pkl.gz，去重 | `processed/<arch>/dataset.pkl.gz` | `data/need_to_gen_augref.pkl.gz` |
+| generate | LLM 生成参考摘要（断点续跑） | `need_to_gen_augref.pkl.gz` | `data/final_ref.pkl.gz` |
+| apply | 将 reference 写回各架构数据集 | `final_ref.pkl.gz` | `processed/<arch>/dataset.pkl.gz` + `baseline.pkl.gz` |
 
 | Mode | Description | Components |
 |------|-------------|------------|

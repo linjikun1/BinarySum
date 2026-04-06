@@ -128,18 +128,15 @@ class OpenAISummarizer:
         
         # 2. Construct Prompt
         prompt = f"""
-You are an expert Reverse Engineer. Perform a Hierarchical Path-Sensitive Summarization (HPSS) based on the execution paths below.
+You are an expert Reverse Engineer. Analyze the execution paths of a binary function below and produce accurate behavioral descriptions.
 
 {compressed_context}
 
-Follow this 2-step reasoning process strictly:
-
 **Step 1: Path-Level Analysis**
-Analyze each path's assembly code. For REFERENCE blocks, look up their original content.
-Describe each path's execution logic (register flow, control logic).
+For each path, write a concise, factually accurate description of its execution behavior.
 
-**Step 2: Global Summarization**
-Synthesize all paths into one summary sentence (max 30 words).
+**Step 2: Global Summary**
+Write one sentence (max 30 words) summarizing the function's overall behavior. Be accurate above all else.
 
 Response Format (JSON):
 {{

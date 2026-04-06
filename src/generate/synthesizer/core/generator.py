@@ -10,6 +10,13 @@ class OpenAIFinalSummarizer:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
+    def _strip_thinking(self, text: str) -> str:
+        """Remove <think>...</think> reasoning blocks from model output."""
+        import re
+        # Remove <think>...</think> blocks (including multiline)
+        text = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.IGNORECASE)
+        return text.strip()
+
     def _chat(self, prompt, temperature=0.1):
         for attempt in range(self.max_retries):
             try:
@@ -21,7 +28,8 @@ class OpenAIFinalSummarizer:
                     ],
                     temperature=temperature
                 )
-                return response.choices[0].message.content.strip()
+                content = response.choices[0].message.content.strip()
+                return self._strip_thinking(content)
             except openai.APIConnectionError as e:
                 print(f"Connection error (attempt {attempt+1}/{self.max_retries}): {e}")
                 if attempt < self.max_retries - 1:
@@ -36,85 +44,115 @@ class OpenAIFinalSummarizer:
         print(f"Failed after {self.max_retries} retries")
         return ""
 
-    def _build_prompt(self, decompiled_code, cfg_description, snippets_text):
-        """
-        Build prompt based on available context.
-        
-        Template structure (maximize similarity, minimize difference):
-        - Common: decompiled code section + task + requirements
-        - Optional: CFG section, snippets section, Confidence Handling
-        """
-        # Common header
-        has_cfg = cfg_description is not None
-        has_snippets = snippets_text is not None
-        
-        # Determine intro text based on available context
-        if has_cfg and has_snippets:
-            intro = "You are given a stripped and decompiled C function, the corresponding description which interpreted from the control flow graph, and some potentially related source snippets for context."
-        elif has_cfg:
-            intro = "You are given a stripped and decompiled C function, and the corresponding summary which interpreted from the control flow graph of the function."
-        elif has_snippets:
-            intro = "You are given a stripped and decompiled C function, and some potentially related source snippets for context."
-        else:
-            intro = "You are given a stripped and decompiled C function."
-        
-        # Decompile code section (always present)
+    def _build_prompt_m1(self, decompiled_code):
+        """M1: Baseline - decompiled code only."""
+        intro = "You are given a stripped and decompiled C function."
         code_section = f"""Here is the decompiled C function:
                             ```C
                             {decompiled_code}
                             ```
                         """
-        
-        # CFG section (optional)
-        cfg_section =  f"""Here is the corresponding CFG description: {cfg_description}"""  if has_cfg else ""
-        
-        # Snippets section (optional)
-        snippets_section = f"""Here are some source snippets: {snippets_text}""" if has_snippets else ""
-        
-        # Task section
-        if has_cfg and has_snippets:
-            task = """Your task is to:
-                        1. Use the decompiled function as the base, the CFG description and the source snippets to enhance understanding.
-                        2. Generate a concise, one-sentence summary of no more than 25 words that summarizes function's purpose.
-                    """
-        elif has_cfg:
-            task = """Your task is to:
-                        1. Use the decompiled function as the base and the CFG summary to enhance understanding.
-                        2. Generate a concise, one-sentence summary of no more than 25 words that summarizes function's purpose.
-                    """
-        elif has_snippets:
-            task = """Your task is to:
-                        1. Use the decompiled function as the base and the source snippets to enhance understanding.
-                        2. Generate a concise, one-sentence summary of no more than 25 words that summarizes function's purpose.
-                    """
-        else:
-            task = "Your task is to generate a concise, one-sentence summary of no more than 25 words that summarizes the function's purpose."
-        
-        # Requirements section (with conditional Confidence Handling)
+        task = "Your task is to generate a concise, one-sentence summary of no more than 25 words that summarizes the function's purpose."
         requirements = """Strict requirements to output:
 - Make your best definitive interpretation based on code evidence, avoid placeholders and generic descriptions WHEN strong and distinct C-source-style features (explicit string literals or known API calls) are present in the decompiled code.
 - DO NOT use uncertain words like "possible", "seems", "likely", "appears", "may", "might", "probably". Prohibiting the output of decompiled symbols (sub_/FUN_/0x...).
 - Example of ideal answer: "Sends a byte to the device via PS/2 protocol and waits for an answer or timeout". Bad answer: "This function possibly performs specified operations on data"."""
-        
-        confidence_handling = """
-- **Confidence Handling**, if snippet is marked with:
-    - `[HIGH CONFIDENCE SOURCE]`, you may trust its logic and intent significantly, provided it doesn't blatantly contradict the decompiled code.
-    - `[CONTEXT REFERENCE]`, just use its domain knowledge for Naming/Structs ONLY, DO NOT derive semantics that go beyond the code domain implied by the code itself.
-    - `[UNCERTAIN FRAGMENT]`, DO NOT introduce new action claims (e.g., parse/validate/register/serialize) unless the decompiled code itself explicitly evidences them (strong and distinct features)."""
-        
-        if has_snippets:
-            requirements += confidence_handling
-        
-        # Assemble prompt
+        return "\n\n".join([intro, code_section, task, requirements])
+
+    def _build_prompt_m2(self, decompiled_code, cfg_description):
+        """M2: + HPSS (CFG description)."""
+        intro = "You are given a stripped and decompiled C function, and the corresponding summary which interpreted from the control flow graph of the function."
+        code_section = f"""Here is the decompiled C function:
+                            ```C
+                            {decompiled_code}
+                            ```
+                        """
+        cfg_section = f"""Here is the CFG-based behavioral description of this function: {cfg_description}
+
+Note: This description is derived from binary control flow analysis and captures low-level execution behavior (register operations, memory accesses, control flow branches, named calls if any). Use it to complement the decompiled code — it may reveal execution paths or low-level patterns not obvious from decompilation alone."""
+        task = """Your task is to:
+                        1. Use the decompiled function as the base and the CFG summary to enhance understanding.
+                        2. Generate a concise, one-sentence summary of no more than 25 words that summarizes function's purpose.
+                    """
+        requirements = """Strict requirements to output:
+- Make your best definitive interpretation based on code evidence, avoid placeholders and generic descriptions WHEN strong and distinct C-source-style features (explicit string literals or known API calls) are present in the decompiled code.
+- DO NOT use uncertain words like "possible", "seems", "likely", "appears", "may", "might", "probably". Prohibiting the output of decompiled symbols (sub_/FUN_/0x...).
+- Example of ideal answer: "Sends a byte to the device via PS/2 protocol and waits for an answer or timeout". Bad answer: "This function possibly performs specified operations on data"."""
+        return "\n\n".join([intro, code_section, cfg_section, task, requirements])
+
+    def _build_prompt_m3(self, decompiled_code, cfg_description, snippets_text):
+        """M3: + HPSS + CCR (raw retrieved source snippets, no SDN filtering)."""
+        intro = "You are given a stripped and decompiled C function, a CFG-based behavioral description, and some potentially related source snippets for reference."
+        code_section = f"""Here is the decompiled C function:
+                            ```C
+                            {decompiled_code}
+                            ```
+                        """
+        cfg_section = f"""Here is the CFG-based behavioral description of this function: {cfg_description}
+
+Note: This description is derived from binary control flow analysis and captures low-level execution behavior (register operations, memory accesses, control flow branches, named calls if any). Use it to complement the decompiled code — it may reveal execution paths or low-level patterns not obvious from decompilation alone.""" if cfg_description else ""
+        snippets_section = f"""Here are some potentially related source code snippets retrieved for reference:
+
+{snippets_text}"""
+        task = """Your task is to:
+                        1. Use the decompiled function and CFG description as the primary basis, and use the source snippets to enhance understanding.
+                        2. Generate a concise, one-sentence summary of no more than 25 words that summarizes the function's purpose.
+                    """
+        requirements = """Strict requirements to output:
+- Make your best definitive interpretation based on code evidence, avoid placeholders and generic descriptions WHEN strong and distinct C-source-style features (explicit string literals or known API calls) are present in the decompiled code.
+- DO NOT use uncertain words like "possible", "seems", "likely", "appears", "may", "might", "probably". Prohibiting the output of decompiled symbols (sub_/FUN_/0x...).
+- Example of ideal answer: "Sends a byte to the device via PS/2 protocol and waits for an answer or timeout". Bad answer: "This function possibly performs specified operations on data"."""
         parts = [intro, code_section]
         if cfg_section:
             parts.append(cfg_section)
-        if snippets_section:
-            parts.append(snippets_section)
-        parts.append(task)
-        parts.append(requirements)
-        
+        parts += [snippets_section, task, requirements]
         return "\n\n".join(parts)
+
+    def _build_prompt_m4(self, decompiled_code, cfg_description, snippets_text):
+        """M4: + HPSS + CCR + SDN (filtered and tagged source snippets)."""
+        intro = "You are given a stripped and decompiled C function, a CFG-based behavioral description, and some potentially related source snippets for context."
+        code_section = f"""Here is the decompiled C function:
+                            ```C
+                            {decompiled_code}
+                            ```
+                        """
+        cfg_section = f"""Here is the CFG-based behavioral description of this function: {cfg_description}
+
+Note: This description is derived from binary control flow analysis and captures low-level execution behavior (register operations, memory accesses, control flow branches, named calls if any). Use it to complement the decompiled code — it may reveal execution paths or low-level patterns not obvious from decompilation alone.""" if cfg_description else ""
+        snippets_section = f"""Here are some potentially related source code snippets retrieved for reference:
+
+{snippets_text}"""
+        task = """Your task is to:
+                        1. Use the decompiled function and CFG description as the primary basis.
+                        2. Use snippets according to their confidence tags:
+                           - `[HIGH CONFIDENCE SOURCE]`: trust its logic and intent significantly, provided it doesn't contradict the decompiled code.
+                           - `[CONTEXT REFERENCE]`: use for naming/domain terms ONLY, do NOT derive action semantics from it.
+                           - `[UNCERTAIN FRAGMENT]`: do NOT introduce new action claims unless the decompiled code itself explicitly evidences them.
+                        3. If no snippet tag is applicable or all snippets seem unrelated, fall back to the decompiled code and CFG description alone.
+                        4. Generate a concise, one-sentence summary of no more than 25 words that summarizes the function's purpose.
+                    """
+        requirements = """Strict requirements to output:
+- Make your best definitive interpretation based on code evidence, avoid placeholders and generic descriptions WHEN strong and distinct C-source-style features (explicit string literals or known API calls) are present in the decompiled code.
+- DO NOT use uncertain words like "possible", "seems", "likely", "appears", "may", "might", "probably". Prohibiting the output of decompiled symbols (sub_/FUN_/0x...).
+- Example of ideal answer: "Sends a byte to the device via PS/2 protocol and waits for an answer or timeout". Bad answer: "This function possibly performs specified operations on data"."""
+        parts = [intro, code_section]
+        if cfg_section:
+            parts.append(cfg_section)
+        parts += [snippets_section, task, requirements]
+        return "\n\n".join(parts)
+
+    def _build_prompt(self, decompiled_code, cfg_description, snippets_text):
+        """Legacy dispatcher — routes to per-mode builders based on available context."""
+        has_cfg = cfg_description is not None and cfg_description.strip() != ""
+        has_snippets = snippets_text is not None
+        if has_cfg and has_snippets:
+            return self._build_prompt_m4(decompiled_code, cfg_description, snippets_text)
+        elif has_cfg:
+            return self._build_prompt_m2(decompiled_code, cfg_description)
+        elif has_snippets:
+            return self._build_prompt_m3(decompiled_code, None, snippets_text)
+        else:
+            return self._build_prompt_m1(decompiled_code)
 
     def generate_summary(self, decompiled_code, cfg_description=None, source_candidates=None):
         """

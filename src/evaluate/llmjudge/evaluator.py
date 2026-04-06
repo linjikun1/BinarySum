@@ -12,34 +12,7 @@ from config import get_openai_config
 # Use pip-installed deepeval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 from deepeval.metrics import GEval
-from deepeval.models.base_model import DeepEvalBaseLLM
-from openai import OpenAI
-
-
-class CustomOpenAIModel(DeepEvalBaseLLM):
-    """Custom LLM wrapper that bypasses deepeval's GPT model whitelist."""
-
-    def __init__(self, model_name, api_key, base_url, temperature=0.1):
-        self.model_name = model_name
-        self.temperature = temperature
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
-
-    def load_model(self):
-        return self.client
-
-    def generate(self, prompt: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self.temperature,
-        )
-        return response.choices[0].message.content
-
-    async def a_generate(self, prompt: str) -> str:
-        return self.generate(prompt)
-
-    def get_model_name(self) -> str:
-        return self.model_name
+from deepeval.models.llms.openai_model import GPTModel
 
 class LLMJudgeEvaluator:
     """Evaluator for LLM-as-a-Judge metrics (G-Eval)."""
@@ -69,9 +42,9 @@ class LLMJudgeEvaluator:
         if api_key == "YOUR_API_KEY_HERE":
             print("Warning: No API key configured.")
         
-        self.model = CustomOpenAIModel(
-            model_name=model_name,
-            api_key=api_key,
+        self.model = GPTModel(
+            model=model_name,
+            _openai_api_key=api_key,
             base_url=base_url,
             temperature=temperature
         )

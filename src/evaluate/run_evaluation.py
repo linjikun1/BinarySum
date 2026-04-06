@@ -19,7 +19,7 @@ if project_root not in sys.path:
 # ==========================================
 # Default list of system keys in the JSON to evaluate
 # For BinarySum, the generated summary is stored under 'generated_summary'
-DEFAULT_SYSTEMS = ['LLM-Zero']
+DEFAULT_SYSTEMS = ['generated_summary']
 # For evaluating multiple baselines, use:
 # DEFAULT_SYSTEMS = ['HexT5', 'BinT5', 'CP-BCS', 'MiSum', 'ProRec']
 DEFAULT_REFERENCE_KEY = 'reference'          # Reference summary (ground truth) - LLM-generated from source_code
@@ -110,13 +110,16 @@ def run_evaluation(args):
         
     llmjudge_eval = None
     if args.llmjudge:
-        from evaluate.llmjudge import LLMJudgeEvaluator
+        from evaluate.llmjudge import UnifiedLLMJudgeEvaluator
         profile = getattr(args, 'profile', None)
-        llmjudge_eval = LLMJudgeEvaluator(profile=profile)
+        use_logprobs = getattr(args, 'logprobs', False)
+        llmjudge_eval = UnifiedLLMJudgeEvaluator(profile=profile, use_logprobs=use_logprobs)
 
     # Loop through each system
     for sys_name in systems:
-        print(f"\n[{sys_name}]")
+        # Pretty-print system name: strip "generated_summary_" prefix if present
+        display_name = sys_name.replace("generated_summary_", "") if sys_name.startswith("generated_summary_") else sys_name
+        print(f"\n[{display_name}]")
 
         # Extract summaries for this system
         gens = [item.get(sys_name, "") for item in data]
@@ -159,34 +162,54 @@ def run_evaluation(args):
             
             print(f"  SemSim: CodeBERTScore={np.mean(cbs_scores):.4f}, SIDE={np.mean(side_scores):.4f}")
 
-        # 3. LLM-as-a-Judge
-        if args.llmjudge:
-            # We process LLM eval sequentially
-            llm_scores = {'accuracy': [], 'coverage': [], 'effectiveness': []}
-            for i in range(len(data)):
-            # for i in range(20):
-                gen_text = gens[i]
-                code_text = codes[i]
-                
-                if not code_text or not gen_text:
-                    continue
-                    
-                try:
-                    res = llmjudge_eval.evaluate_single(gen_text, code_text)
-                    sample_metrics[i][sys_name].update(res)
-                    print(f"  LLMJudge [{i}]: accuracy={res['accuracy']:.2f}, coverage={res['coverage']:.2f}, effectiveness={res['effectiveness']:.2f}")
-                    for k in llm_scores:
-                        if k in res:
-                            llm_scores[k].append(res[k])
-                except Exception as e:
-                    print(f"Error evaluating sample {i}: {e}")
-            
-            # Print average scores
-            if any(llm_scores.values()):
-                avg_acc = np.mean(llm_scores['accuracy']) if llm_scores['accuracy'] else float('nan')
-                avg_cov = np.mean(llm_scores['coverage']) if llm_scores['coverage'] else float('nan')
-                avg_eff = np.mean(llm_scores['effectiveness']) if llm_scores['effectiveness'] else float('nan')
-                print(f"  LLMJudge Avg: accuracy={avg_acc:.2f}, coverage={avg_cov:.2f}, effectiveness={avg_eff:.2f}")
+    # 3. LLM-as-a-Judge (unified multi-system evaluation)
+    # evaluate_multi processes ALL systems for each sample in 3 API calls total:
+    #   Step1 (source semantics) runs once per sample, shared across all systems.
+    #   Step2 (claim extraction) and Step3 (scoring) each run once per sample for all systems.
+    if args.llmjudge:
+        llm_scores = {sys_name: {'accuracy': [], 'coverage': [], 'effectiveness': []} for sys_name in systems}
+        gens_per_system = {sys_name: [item.get(sys_name, "") for item in data] for sys_name in systems}
+
+        for i in range(len(data)):
+        # for i in range(20):
+            code_text = codes[i]
+            if not code_text:
+                continue
+
+            # Build summaries dict for this sample, skip empty ones
+            summaries = {
+                sys_name: gens_per_system[sys_name][i]
+                for sys_name in systems
+                if gens_per_system[sys_name][i]
+            }
+            if not summaries:
+                continue
+
+            try:
+                res = llmjudge_eval.evaluate_multi(summaries, code_text)
+                for sys_name, scores in res.items():
+                    if sys_name.startswith('_'):  # skip _source_semantics, _claims
+                        continue
+                    sample_metrics[i].setdefault(sys_name, {})
+                    sample_metrics[i][sys_name].update(scores)
+                    dn = sys_name.replace('generated_summary_', '') if sys_name.startswith('generated_summary_') else sys_name
+                    print(f"  LLMJudge [{i}][{dn}]: accuracy={scores.get('accuracy', 0):.4f}, "
+                          f"coverage={scores.get('coverage', 0):.4f}, effectiveness={scores.get('effectiveness', 0):.4f}")
+                    for k in ('accuracy', 'coverage', 'effectiveness'):
+                        if k in scores:
+                            llm_scores[sys_name][k].append(scores[k])
+            except Exception as e:
+                print(f"Error evaluating sample {i}: {e}")
+
+        # Print average scores per system
+        for sys_name in systems:
+            s = llm_scores[sys_name]
+            if any(s.values()):
+                dn = sys_name.replace('generated_summary_', '') if sys_name.startswith('generated_summary_') else sys_name
+                avg_acc = np.mean(s['accuracy'])     if s['accuracy']     else float('nan')
+                avg_cov = np.mean(s['coverage'])     if s['coverage']     else float('nan')
+                avg_eff = np.mean(s['effectiveness']) if s['effectiveness'] else float('nan')
+                print(f"  LLMJudge Avg [{dn}]: accuracy={avg_acc:.4f}, coverage={avg_cov:.4f}, effectiveness={avg_eff:.4f}")
 
     # Save results
     with open(args.output_file, 'w', encoding='utf-8') as f:
@@ -225,6 +248,7 @@ def main():
     parser.add_argument("--semsim", action="store_true", help="Run Semantic Similarity metrics (CodeBERTScore, SIDE).")
     parser.add_argument("--llmjudge", action="store_true", help="Run LLM-as-a-Judge evaluation.")
     parser.add_argument("--profile", type=str, default=None, help="OpenAI config profile for LLM eval (default, gpt, etc.).")
+    parser.add_argument("--logprobs", action="store_true", help="Use token logprobs for probability-weighted scoring in LLMJudge (requires model support).")
     
     args = parser.parse_args()
     run_evaluation(args)

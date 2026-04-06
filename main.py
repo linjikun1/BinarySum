@@ -19,12 +19,13 @@ GENERATED_DIR = DATA_DIR / "generated"
 RESULTS_DIR = DATA_DIR / "results"
 
 # Scripts
-PROCESS_SCRIPT = SRC_DIR / "process" / "run_process.py"
+PROCESS_SCRIPT  = SRC_DIR / "process" / "run_process.py"
+AUGREF_SCRIPT   = SRC_DIR / "process" / "gen_augref.py"
 GENERATE_SCRIPT = SRC_DIR / "generate" / "run_generate.py"
-EVAL_SCRIPT = SRC_DIR / "evaluate" / "run_evaluation.py"
+EVAL_SCRIPT     = SRC_DIR / "evaluate" / "run_evaluation.py"
 
 # Default config profile
-DEFAULT_PROFILE = "qwen"
+DEFAULT_PROFILE = "gpt"
 
 
 def ensure_dirs():
@@ -82,6 +83,48 @@ def run_process(args):
     
     print(f"\n{'='*50}")
     print(f"Output: {output_dir}/{args.arch}/dataset.pkl.gz")
+    print(f"{'='*50}")
+
+
+def run_augref(args):
+    """
+    Generate augmented reference summaries for all processed architectures.
+
+    Steps:
+      1. collect  – aggregate dataset.pkl.gz from all arch dirs, dedup by key
+      2. generate – call LLM for each source_code, write final_ref.pkl.gz
+      3. apply    – write "reference" field back into every dataset.pkl.gz
+                    and baseline.pkl.gz under data/processed/
+
+    Intermediate files land in --work-dir (default: data/).
+    """
+    ensure_dirs()
+
+    processed_dir = args.processed_dir or str(PROCESSED_DIR)
+    work_dir      = args.work_dir      or str(DATA_DIR)
+    step          = args.step
+    profile       = getattr(args, 'profile', DEFAULT_PROFILE)
+
+    cmd = [
+        sys.executable, str(AUGREF_SCRIPT),
+        "--processed-dir", processed_dir,
+        "--work-dir",      work_dir,
+        "--step",          step,
+        "--profile",       profile,
+    ]
+
+    print(f"\n{'='*50}")
+    print(f"[AugRef] Step: {step}")
+    print(f"Config Profile: {profile}")
+    print(f"{'='*50}")
+    print(f"Processed Dir : {processed_dir}")
+    print(f"Work Dir      : {work_dir}")
+    print(f"{'='*50}\n")
+
+    subprocess.check_call(cmd)
+
+    print(f"\n{'='*50}")
+    print(f"AugRef Complete! 'reference' field written to dataset.pkl.gz / baseline.pkl.gz")
     print(f"{'='*50}")
 
 
@@ -154,51 +197,99 @@ def run_eval(args):
     """
     Run evaluation metrics.
     
-    Input:  data/generated/<arch>/<mode>/summary.json
-    Output: data/results/<arch>/<mode>_metrics.json
+    Supports one or multiple modes:
+      --mode M1          -> evaluates M1 only
+      --mode M1 M2       -> merges M1+M2 into a tempfile and evaluates both in a single run
+    
+    Input:  data/generated/<arch>/<mode>/summary.json  (one per mode)
+    Output: data/results/<arch>/<modes>_metrics.json
     """
+    import json as _json
+    import tempfile
     ensure_dirs()
-    
+
     arch = args.arch
-    mode = args.mode
+    modes = args.mode  # list of one or more modes
     profile = getattr(args, 'profile', DEFAULT_PROFILE)
-    
+
     # Set config profile for subprocess calls (used by llm_eval)
     os.environ["BINARYSUM_CONFIG_PROFILE"] = profile
-    
-    # Determine input file
+
+    # ---- Build merged input file ----
+    _tmpfile = None  # keep reference to prevent GC-triggered deletion
+
     if args.input_file:
+        # User supplied a ready-made file; use as-is (single mode assumed)
         input_file = args.input_file
+        modes_label = "_".join(modes)
     else:
-        input_file = str(GENERATED_DIR / arch / mode / "summary.json")
-    
-    # Determine output file
+        if len(modes) == 1:
+            # Single mode: use summary.json directly, no merging needed
+            mode = modes[0]
+            input_file = str(GENERATED_DIR / arch / mode / "summary.json")
+            modes_label = mode
+        else:
+            # Multiple modes: merge into a temporary file (no permanent artefact)
+            # Each item gets a key "generated_summary_<MODE>" for its summary.
+            # source_code / reference come from the first mode's file.
+            modes_label = "_".join(modes)
+
+            base_data = _json.load(open(GENERATED_DIR / arch / modes[0] / "summary.json"))
+            # Start with base items (source_code, reference, etc.)
+            merged = [item.copy() for item in base_data]
+            # Add each mode's generated_summary under its own key
+            for mode in modes:
+                mode_data = _json.load(open(GENERATED_DIR / arch / mode / "summary.json"))
+                for i, item in enumerate(mode_data):
+                    merged[i][f"generated_summary_{mode}"] = item.get("generated_summary", "")
+            # Remove the original generic key to avoid confusion
+            for item in merged:
+                item.pop("generated_summary", None)
+
+            # Write to a named temp file (delete=False so subprocess can read it;
+            # we delete it manually after subprocess finishes)
+            _tmpfile = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.json', delete=False, encoding='utf-8'
+            )
+            _json.dump(merged, _tmpfile, indent=2, ensure_ascii=False)
+            _tmpfile.flush()
+            _tmpfile.close()
+            input_file = _tmpfile.name
+            print(f"[Evaluate] Merged {modes} into temp file (will be removed after evaluation)")
+
+    # ---- Determine systems to pass ----
+    if args.systems:
+        systems_arg = args.systems
+    elif len(modes) > 1:
+        systems_arg = ",".join(f"generated_summary_{m}" for m in modes)
+    else:
+        systems_arg = None  # run_evaluation.py uses DEFAULT_SYSTEMS ('generated_summary')
+
+    # ---- Determine output file ----
     if args.output_file:
         output_file = args.output_file
     else:
-        output_file = str(RESULTS_DIR / arch / f"{mode}_metrics.json")
-    
-    # Determine reference file (for comment/source_code if not in input)
-    reference_file = str(GENERATED_DIR / arch / "shared" / "test_filtered.json")
-    
-    # Ensure output directory exists
+        output_file = str(RESULTS_DIR / arch / f"{modes_label}_metrics.json")
+
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    
+
     print(f"\n{'='*50}")
-    print(f"[Evaluate] Mode: {mode} | Architecture: {arch}")
+    print(f"[Evaluate] Mode(s): {modes} | Architecture: {arch}")
     print(f"Config Profile: {profile}")
     print(f"{'='*50}")
-    print(f"Input: {input_file}")
+    print(f"Input:  {input_file}")
     print(f"Output: {output_file}")
+    if systems_arg:
+        print(f"Systems: {systems_arg}")
     print(f"{'='*50}\n")
-    
+
     cmd = [
         sys.executable, str(EVAL_SCRIPT),
         "--input_file", input_file,
-        "--output_file", output_file
+        "--output_file", output_file,
     ]
-    if args.systems:
-        cmd.extend(["--systems", args.systems])
+    if systems_arg:
+        cmd.extend(["--systems", systems_arg])
     if args.texsim:
         cmd.append("--texsim")
     if args.semsim:
@@ -206,9 +297,18 @@ def run_eval(args):
     if args.llmjudge:
         cmd.append("--llmjudge")
         cmd.extend(["--profile", profile])
-        
+        if getattr(args, 'logprobs', False):
+            cmd.append("--logprobs")
+
     subprocess.check_call(cmd)
-    
+
+    # Clean up temp file (only exists for multi-mode merges)
+    if _tmpfile is not None:
+        try:
+            os.unlink(_tmpfile.name)
+        except OSError:
+            pass
+
     print(f"\n{'='*50}")
     print(f"Evaluation Complete!")
     print(f"Output: {output_file}")
@@ -231,6 +331,36 @@ def main():
     parser_prep.set_defaults(func=run_process)
     
     # ========================================
+    # AugRef Command
+    # ========================================
+    parser_augref = subparsers.add_parser(
+        "augref",
+        help="Generate augmented reference summaries via LLM and write back to processed datasets"
+    )
+    parser_augref.add_argument(
+        "--processed-dir",
+        default=None,
+        help="Path to data/processed/ (default: data/processed)"
+    )
+    parser_augref.add_argument(
+        "--work-dir",
+        default=None,
+        help="Directory for intermediate files (default: data/)"
+    )
+    parser_augref.add_argument(
+        "--step",
+        choices=["all", "collect", "generate", "apply"],
+        default="all",
+        help="Which step to run: collect | generate | apply | all (default: all)"
+    )
+    parser_augref.add_argument(
+        "--profile",
+        default=DEFAULT_PROFILE,
+        help="OpenAI config profile (default: gpt)"
+    )
+    parser_augref.set_defaults(func=run_augref)
+
+    # ========================================
     # Generate Command
     # ========================================
     parser_gen = subparsers.add_parser("generate", help="Summary Generation")
@@ -247,14 +377,15 @@ def main():
     # ========================================
     parser_eval = subparsers.add_parser("evaluate", help="Summary Evaluation")
     parser_eval.add_argument("--arch", required=True, help="Architecture/Optimization (e.g., x64_O3)")
-    parser_eval.add_argument("--mode", choices=['M1', 'M2', 'M3', 'M4'], default='M1',
-                            help="Ablation mode to evaluate")
+    parser_eval.add_argument("--mode", choices=['M1', 'M2', 'M3', 'M4'], default=['M1'],
+                            nargs='+', help="Ablation mode(s) to evaluate (e.g. M1 or M1 M2)")
     parser_eval.add_argument("--input-file", help="Input file (default: data/generated/<arch>/<mode>/summary.json)")
     parser_eval.add_argument("--output-file", help="Output file (default: data/results/<arch>/<mode>_metrics.json)")
     parser_eval.add_argument("--systems", help="Comma-separated list of systems to evaluate")
     parser_eval.add_argument("--texsim", action="store_true", help="Run Textual Similarity metrics (BLEU, METEOR, ROUGE)")
     parser_eval.add_argument("--semsim", action="store_true", help="Run Semantic Similarity metrics (CodeBERTScore, SIDE)")
     parser_eval.add_argument("--llmjudge", action="store_true", help="Run LLM-as-a-Judge evaluation")
+    parser_eval.add_argument("--logprobs", action="store_true", help="Use token logprobs for probability-weighted LLMJudge scoring.")
     parser_eval.add_argument("--profile", default=DEFAULT_PROFILE, help="OpenAI config profile")
     parser_eval.set_defaults(func=run_eval)
     

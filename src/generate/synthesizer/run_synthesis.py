@@ -36,17 +36,14 @@ def extract_snippets(item, mode):
         return []
         
     elif mode == 'M3':
-        # Use raw probed sources from CCR (Top 5)
+        # Use raw probed sources from CCR (Top 5), no tags — let LLM judge relevance itself
         raw = item.get('probed_sources', [])
-        cleaned = []
-        for s in raw:
+        for s in raw[:5]:
             if '<asm_token>' in s:
-                cleaned.append(s.split('<asm_token>\n')[-1])
-            else:
-                cleaned.append(s)
-        # Tag them as UNCERTAIN (since no SDN filtering)
-        for s in cleaned[:5]:
-            snippets.append(f"// [UNCERTAIN SOURCE]\n{s}")
+                s = s.split('<asm_token>\n')[-1]
+            s = s.strip()
+            if s:
+                snippets.append(s)
             
     elif mode == 'M4':
         # Use filtered results from SDN
@@ -109,7 +106,11 @@ def run_synthesis(generated_file, output_file, mode):
         decom_code = item.get('strip_decompiled_code') or item.get('codeinfo', {}).get('decompiled_code', "")
 
         # 2. Get CFG Summary (if mode requires)
+        # Treat empty string as None — no CFG info, degrade to M1 behavior
         cfg_desc = item.get('cfg_summary', "") if use_cfg else None
+        if cfg_desc is not None and not cfg_desc.strip():
+            cfg_desc = None
+        # cfg_desc保留（不做关键词过滤，改为在prompt中强化指令）
 
         # 3. Get Snippets (if mode requires)
         snippets = extract_snippets(item, mode)

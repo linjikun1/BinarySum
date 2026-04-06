@@ -62,7 +62,9 @@ def generate_cfg_summaries(original_data_path, paths_path, output_path, config):
         cfg = orig_item.get("cfg", {})
         paths = path_item.get("path", [])
 
-        result = {}
+        result = {
+            'function_addr': orig_item.get('function_addr', ''),  # anchor for alignment check
+        }
         
         if not paths:
             result['path_summaries'] = {}

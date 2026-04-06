@@ -109,15 +109,34 @@ class HPSSManager:
     
     def get_or_create(self, test_data: List[Dict]) -> List[Dict]:
         """
-        存在则加载，不存在则创建
+        存在则加载（校验数量+函数地址对齐），不存在则创建
         
         Args:
-            test_data: 测试数据，用于生成（如果不存在）
+            test_data: 测试数据，用于生成（如果不存在或内容不匹配）
             
         Returns:
             cfg_summary 列表
         """
         if self.exists():
-            print(f"[HPSSManager] Loading existing CFG summary from {self.cfg_file}")
-            return self.load()
+            existing = self.load()
+            stale = False
+            if len(existing) != len(test_data):
+                print(f"[HPSSManager] WARNING: cfg_summary has {len(existing)} items but test_data has {len(test_data)} items. Regenerating...")
+                stale = True
+            else:
+                # Content alignment check: compare function_addr anchors
+                existing_addrs = [item.get('function_addr', '') for item in existing]
+                test_addrs = [item.get('function_addr', '') for item in test_data]
+                if any(ea for ea in existing_addrs):  # only check if anchors exist
+                    mismatches = sum(1 for ea, ta in zip(existing_addrs, test_addrs) if ea != ta)
+                    if mismatches > 0:
+                        print(f"[HPSSManager] WARNING: cfg_summary has {mismatches}/{len(existing)} function_addr mismatches with test_data. Regenerating...")
+                        stale = True
+            
+            if stale:
+                self.cfg_file.unlink(missing_ok=True)
+                # cfg_paths.json is deterministic (no LLM), keep it for reuse
+            else:
+                print(f"[HPSSManager] Loading existing CFG summary from {self.cfg_file}")
+                return existing
         return self.create(test_data)

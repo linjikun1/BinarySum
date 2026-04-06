@@ -6,6 +6,7 @@ CCR Loader
 """
 
 import json
+import re
 from pathlib import Path
 from typing import List, Dict
 
@@ -83,13 +84,16 @@ class CCRLoader:
             'confidence_scores': item.get('confidence_scores', [])
         }
         
-        # 清理 probed_sources 中的特殊标记
+        # 清理 probed_sources 中的特殊标记（<asm_token>、</s>、<s> 等序列模型token）
         cleaned_sources = []
         for source in normalized['probed_sources']:
             if '<asm_token>' in source:
-                # 提取 asm_token 后的实际代码
                 source = source.split('<asm_token>\n')[-1]
-            cleaned_sources.append(source.strip())
+            # 清理所有残留的特殊token（</s>、<s>、<unk> 等）
+            source = re.sub(r'</?[a-z_]+>', '', source)
+            source = source.strip()
+            if source:  # 过滤掉清理后变为空的条目
+                cleaned_sources.append(source)
         normalized['probed_sources'] = cleaned_sources
         
         return normalized
