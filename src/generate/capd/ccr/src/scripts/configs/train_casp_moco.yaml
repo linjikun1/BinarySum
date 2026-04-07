@@ -1,30 +1,48 @@
-# CCR CASP Training Config
-# 架构占位符: x64_O1 (运行时替换为实际架构)
-
-dataset_name: ../data/bimodal-lmpa-shuffled-cg
+# =============================================
+# Paths — update these before training
+# =============================================
+dataset_name: ../data/bimodal-lmpa-shuffled
 run_name: CASP-moco-lmpa-c-only
-output_dir: ../save/x64_O1/CASP/cg-casp-moco-lmpa-c-only
+output_dir: /path/to/save/CASP/cg-casp-moco-lmpa-c-only
+hub_model_id: PurCL/casp-moco-lmpa-c-only
 
-# Assembly Model (选择对应架构的 longcodeart)
-assembly_model_name_or_path: ../model/longcodeart-x86
+# Assembly model (LongCodeArt checkpoint)
+assembly_model_name_or_path: /path/to/models/longcodeart
 
-# Source Model
-source_model_name_or_path: ../model/codet5p-110m-embedding
+# Source model (CodeT5+ 110M embedding)
+source_model_name_or_path: /path/to/models/codet5p-110m-embedding
+
+# GNN Settings
+# gnn_type: GATv2 (recommended), GAT, or GraphSAGE
+gnn_type: "GATv2"
+gnn_num_layers: 2
+gnn_heads: 4  # GATv2/GAT only, ignored by GraphSAGE
+gnn_dropout: 0.1
+# gnn_hidden_dim: null  # optional, defaults to assembly_embed_dim // 4
 
 use_momentum_encoder: true
 
+# Do
 trust_remote_code: true
-dataloader_num_workers: 8
+dataloader_num_workers: 16
+dataloader_pin_memory: true
 remove_unused_columns: false
 do_train: true
 do_eval: true
 
+# Batch Size
+# queue size // batch size == 0
+# batch size = n_gpu * per_device_bs
+# === 4 GPU ===
+# batch size = 4 * 16 = 64
 per_device_train_batch_size: 2
+# 1024 // 64 = 16
 queue_size: 4096
 momentum: 0.999
 gradient_accumulation_steps: 1
 per_device_eval_batch_size: 64
 
+# Training Setting
 num_train_epochs: 2
 learning_rate: 0.00005
 warmup_steps: 1000
@@ -34,10 +52,16 @@ evaluation_strategy: steps
 eval_steps: 500
 save_steps: 500
 logging_steps: 10
-save_total_limit: 2
+save_total_limit: 10
 
+# Out
+# report_to: wandb
 cache_dir: ../save/.cache
 push_to_hub: false
+hub_private_repo: false
+hub_strategy: all_checkpoints
+
+# Magic
 overwrite_output_dir: true
 resume_from_checkpoint: false
 torch_compile: false

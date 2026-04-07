@@ -471,7 +471,7 @@ def main():
         cache_dir=model_args.cache_dir
     )
     ct5p_embedding_model = AutoModel.from_pretrained(
-        "/data1/linjk/work/prorec/model/Salesforce/codet5p-110m-embedding",
+        "/path/to/models/codet5p-110m-embedding",
         cache_dir=model_args.cache_dir,
         trust_remote_code=True,
     )

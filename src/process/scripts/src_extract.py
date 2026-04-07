@@ -173,8 +173,8 @@ def extract_functions(
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Extract C functions (and optionally comments) to JSON")
-    p.add_argument("--project_root", default="/home/linjk/study/data/dataset/my_data/source", help="Root directory to scan for .c files")
-    p.add_argument("--output_json", default="/home/linjk/study/data/result/test_src_info.json", help="Path to output JSON file")
+    p.add_argument("--project_root", default=".", help="Root directory to scan for .c files")
+    p.add_argument("--output_json", default="src_info.json", help="Path to output JSON file")
     p.add_argument("--with-comment", action="store_true", dest="with_comment", help="Also extract block comments immediately above functions")
     return p.parse_args(argv)
 

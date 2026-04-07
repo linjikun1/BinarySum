@@ -93,6 +93,9 @@ class LongelmEmbeddings(nn.Module):
             else:
                 position_ids = self.create_position_ids_from_inputs_embeds(inputs_embeds)
 
+        # Clamp position_ids to valid range to prevent index out of bounds
+        position_ids = torch.clamp(position_ids, 0, self.position_embeddings.num_embeddings - 1)
+
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -106,8 +109,13 @@ class LongelmEmbeddings(nn.Module):
         if token_type_ids is None:
             if hasattr(self, "token_type_ids"):
                 buffered_token_type_ids = self.token_type_ids[:, :seq_length]
-                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(input_shape[0], seq_length)
-                token_type_ids = buffered_token_type_ids_expanded
+                # Check if buffered token_type_ids has enough length
+                if buffered_token_type_ids.shape[1] < seq_length:
+                    # Buffer too short, create new token_type_ids
+                    token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
+                else:
+                    buffered_token_type_ids_expanded = buffered_token_type_ids.expand(input_shape[0], seq_length)
+                    token_type_ids = buffered_token_type_ids_expanded
             else:
                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
 

@@ -43,7 +43,7 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
                 remaining_data_dep.append((source_node_id, target_node_id))
 
         # graph construction
-        graph = nx.DiGraph()
+        graph = nx.DiGraph()  # 使用有向图
         graph.add_nodes_from(range(block_count))
         graph.add_edges_from(remaining_data_dep)
 
@@ -154,9 +154,6 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
     ):
         import ast
         def process(item):
-            # if isinstance(item['code'], str):
-            #     encoded = self.inst_encode(eval(item['code']), eval(item['data_dep']))
-            # else:
             while isinstance(item, str):
                 item = ast.literal_eval(item)
             encoded = self.inst_encode(item['code'], item['data_dep'])
@@ -168,7 +165,7 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
         
         # 2. GNN 图结构输入
         edge_index_list = []       # 存储 (src, dst) 边元组
-        edge_type_list = []
+        edge_type_list = []        # 存储边的类型 (0: caller->target, 1: callee->target)
         target_node_indices = []   # 存储每个样本的 target 节点在批次中的全局索引
         batch_indices = []         # 存储每个节点属于哪个原始样本
         
@@ -194,14 +191,14 @@ class LongelmTokenizer(PreTrainedTokenizerFast):
             target_node_indices.append(target_global_idx)
 
             # 3. 为 GNN 创建图结构 (边)
-            # 边: Callers -> Target (双向)
+            # 边: Callers -> Target (edge_type=0)
             for j in range(len(caller_nodes)):
                 caller_local_idx = j + 1
                 caller_global_idx = node_counter + caller_local_idx
                 edge_index_list.append((caller_global_idx, target_global_idx))
                 edge_type_list.append(0)
             
-            # 边: Target -> Callees (双向)
+            # 边: Target -> Callees (edge_type=1)
             for j in range(len(callee_nodes)):
                 callee_local_idx = j + 1 + len(caller_nodes)
                 callee_global_idx = node_counter + callee_local_idx

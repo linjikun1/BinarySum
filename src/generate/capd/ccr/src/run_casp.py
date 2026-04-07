@@ -137,6 +137,23 @@ class ModelArguments:
         default=0.999, metadata={"help": "Momentum"}
     )
 
+    # GNN configuration
+    gnn_type: str = field(
+        default="GATv2", metadata={"help": "GNN type (supports: GATv2, GAT, GraphSAGE)"}
+    )
+    gnn_hidden_dim: Optional[int] = field(
+        default=None, metadata={"help": "GNN hidden dimension, default is assembly_embed_dim // 4"}
+    )
+    gnn_num_layers: int = field(
+        default=2, metadata={"help": "Number of GNN layers"}
+    )
+    gnn_heads: int = field(
+        default=4, metadata={"help": "Number of attention heads for GATv2/Transformer"}
+    )
+    gnn_dropout: float = field(
+        default=0.1, metadata={"help": "Dropout rate for GNN"}
+    )
+
 
 @dataclass
 class DataTrainingArguments:
@@ -297,66 +314,12 @@ def main():
             )
 
     # 4. Load dataset
-    # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub).
-    #
-    # For CSV/JSON files this script will use the first column for the full image path and the second column for the
-    # captions (unless you specify column names for this with the `image_column` and `caption_column` arguments).
-    #
-    # if data_args.dataset_name is not None:
-    #     # Downloading and loading a dataset from the hub.
-    #     dataset = load_dataset(
-    #         data_args.dataset_name,
-    #         data_args.dataset_config_name,
-    #         cache_dir=model_args.cache_dir,
-    #         keep_in_memory=False,
-    #         data_dir=data_args.data_dir,
-    #         token=model_args.token,
-    #     )
-    #     if "validation" not in dataset.keys():
-    #         dataset["validation"] = load_dataset(
-    #             data_args.dataset_name,
-    #             data_args.dataset_config_name,
-    #             split=f"train[:{data_args.validation_split_percentage}%]",
-    #             cache_dir=model_args.cache_dir,
-    #             use_auth_token=True if model_args.use_auth_token else None,
-    #             # streaming=data_args.streaming,
-    #         )
-    #         dataset["train"] = load_dataset(
-    #             data_args.dataset_name,
-    #             data_args.dataset_config_name,
-    #             split=f"train[{data_args.validation_split_percentage}%:]",
-    #             cache_dir=model_args.cache_dir,
-    #             use_auth_token=True if model_args.use_auth_token else None,
-    #             # streaming=data_args.streaming,
-    #         )
-    # else:
-    #     data_files = {}
-    #     if data_args.train_file is not None:
-    #         data_files["train"] = data_args.train_file
-    #         extension = data_args.train_file.split(".")[-1]
-    #     if data_args.validation_file is not None:
-    #         data_files["validation"] = data_args.validation_file
-    #         extension = data_args.validation_file.split(".")[-1]
-    #     if data_args.test_file is not None:
-    #         data_files["test"] = data_args.test_file
-    #         extension = data_args.test_file.split(".")[-1]
-    #     dataset = load_dataset(
-    #         extension,
-    #         data_files=data_files,
-    #         cache_dir=model_args.cache_dir,
-    #         token=model_args.token,
-    #     )
-
     train_dataset = load_from_disk("../data/bimodal-lmpa-shuffled-cg/train/train")
     valid_dataset = load_from_disk("../data/bimodal-lmpa-shuffled-cg/valid/valid")
     dataset = DatasetDict({
         "train": train_dataset,
         "validation": valid_dataset
     })
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
 
     # 5. Load pretrained model, tokenizer
     
@@ -450,6 +413,12 @@ def main():
             m=model_args.momentum,
             assembly_config=assembly_config,
             source_config=source_config,
+            # GNN configuration
+            gnn_type=model_args.gnn_type,
+            gnn_hidden_dim=model_args.gnn_hidden_dim,
+            gnn_num_layers=model_args.gnn_num_layers,
+            gnn_heads=model_args.gnn_heads,
+            gnn_dropout=model_args.gnn_dropout,
         )
         model = MomentumDualEncoderModel(
             config=config,
@@ -462,6 +431,12 @@ def main():
             logit_scale_init_value=2.6592,
             assembly_config=assembly_config,
             source_config=source_config,
+            # GNN configuration
+            gnn_type=model_args.gnn_type,
+            gnn_hidden_dim=model_args.gnn_hidden_dim,
+            gnn_num_layers=model_args.gnn_num_layers,
+            gnn_heads=model_args.gnn_heads,
+            gnn_dropout=model_args.gnn_dropout,
         )
         model = DualEncoderModel(
             config=config,

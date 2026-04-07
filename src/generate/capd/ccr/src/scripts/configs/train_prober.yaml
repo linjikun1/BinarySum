@@ -1,23 +1,27 @@
-# CCR Prober Training Config
-# 架构占位符: x64_O1 (运行时替换为实际架构)
-
-dualencoder_name_or_path: ../save/x64_O1/CASP/cg-casp-moco-lmpa-c-only
+# =============================================
+# Paths — update these before training
+# =============================================
+dualencoder_name_or_path: /path/to/save/CASP/cg-casp-moco-lmpa-c-only
 dualencoder_subfolder: auto
-asm_tokenizer_name_or_path: ../model/longcodeart-x86
-src_model_name_or_path: ../model/CodeLlama-13b-hf
+asm_tokenizer_name_or_path: /path/to/models/longcodeart
+src_model_name_or_path: /path/to/models/CodeLlama-13b-hf
+# asm_feature_select_strategy: all
 asm_feature_select_strategy: nodes
-output_dir: ../save/x64_O1/src_prober_codellama-13b-last1unfreeze
+output_dir: /path/to/save/allcg_src_prober_codellama-13b-last1unfreeze
+hub_model_id: PurCL/x64_O2/src_prober_codellama-13b-last1unfreeze
 dataset_name: ../data/bimodal-lmpa-shuffled-cg
-run_name: prober-codellama-13b-last1unfreeze
+run_name: prober-codellama-13b-last1unfreeze-x64_O2
 
 max_seq_length: 256
-max_eval_samples: 2000
+
+max_eval_samples: 2000 # debug
 
 per_device_train_batch_size: 8
 gradient_accumulation_steps: 4
 per_device_eval_batch_size: 16
 
-dataloader_num_workers: 4
+dataloader_num_workers: 16
+dataloader_pin_memory: true
 remove_unused_columns: false
 do_train: true
 do_eval: true
@@ -25,6 +29,7 @@ do_predict: false
 
 overwrite_cache: false
 
+# Training
 num_train_epochs: 5
 learning_rate: 0.00005
 warmup_steps: 1000
@@ -36,8 +41,15 @@ save_steps: 500
 logging_steps: 10
 save_total_limit: 1
 
+# Out
+# report_to: wandb
 cache_dir: ../save/.cache
 push_to_hub: false
+hub_private_repo: false
+hub_strategy: all_checkpoints
+
 overwrite_output_dir: true
+# resume_from_checkpoint: true
 torch_compile: false
 fp16: true
+# no_cuda: true

@@ -17,7 +17,6 @@ from typing import Optional, Dict, List
 
 from accelerate import Accelerator, init_empty_weights, load_checkpoint_and_dispatch
 from accelerate.inference import prepare_pippy, PartialState
-from accelerate.utils import gather_object
 
 import torch
 from datasets import load_dataset, DatasetDict, load_from_disk
@@ -446,7 +445,7 @@ def main():
         cache_dir=model_args.cache_dir
     )
     ct5p_embedding_model = AutoModel.from_pretrained(
-        "/data1/linjk/work/prorec/model/Salesforce/codet5p-110m-embedding",
+        "/path/to/models/codet5p-110m-embedding",
         cache_dir=model_args.cache_dir,
         trust_remote_code=True,
     )
@@ -548,10 +547,42 @@ def main():
             process_index=accelerator.process_index
         )
 
-    results_gathered = gather_object(results)
+    # 释放模型显存
+    del model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
-    with open(os.path.join(training_args.output_dir, data_args.output_file), 'w') as f:
-        json.dump(results_gathered, f, indent=2)
+    # 各进程独立保存结果，避免 gather_object 跨进程 NCCL 同步超时
+    output_file_base = data_args.output_file
+    if output_file_base.endswith('.json'):
+        output_file_rank = output_file_base[:-5] + f'_rank{accelerator.process_index}.json'
+    else:
+        output_file_rank = output_file_base + f'_rank{accelerator.process_index}.json'
+
+    with open(os.path.join(training_args.output_dir, output_file_rank), 'w') as f:
+        json.dump(results, f, indent=2)
+
+    logger.info(f"[rank{accelerator.process_index}] Saved {len(results)} results to {output_file_rank}")
+
+    # 等待所有进程都写完文件后，由主进程合并
+    accelerator.wait_for_everyone()
+
+    if accelerator.is_main_process:
+        results_gathered = []
+        num_processes = accelerator.num_processes
+        for rank_id in range(num_processes):
+            if output_file_base.endswith('.json'):
+                rank_file = output_file_base[:-5] + f'_rank{rank_id}.json'
+            else:
+                rank_file = output_file_base + f'_rank{rank_id}.json'
+            rank_file_path = os.path.join(training_args.output_dir, rank_file)
+            with open(rank_file_path, 'r') as f:
+                results_gathered.extend(json.load(f))
+
+        with open(os.path.join(training_args.output_dir, output_file_base), 'w') as f:
+            json.dump(results_gathered, f, indent=2)
+        logger.info(f"[main process] Merged {len(results_gathered)} results to {output_file_base}")
 
 
 if __name__ == '__main__':

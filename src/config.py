@@ -2,23 +2,8 @@
 """
 Configuration utility for BinarySum.
 
-Reads from config.ini (INI format) for API keys and settings.
-
-Usage:
-    from config import get_openai_config, get_generation_config
-    
-    # Get OpenAI config for a profile
-    config = get_openai_config("gpt")
-    # Returns: {"api_key": "...", "base_url": "...", "model_name": "..."}
-    
-    # Get generation parameters
-    gen_config = get_generation_config("hpss")
-    # Returns: {"temperature": 0.5, "max_tokens": 1024}
-
-Setup:
-    1. Copy config.ini.example to config.ini
-    2. Fill in your API keys in config.ini
-    3. Import and use in your code
+Reads API keys and settings from config.ini.
+Copy config.ini.example to config.ini and fill in your values.
 """
 
 import configparser
@@ -66,18 +51,8 @@ def reload_config() -> configparser.ConfigParser:
 
 def get_openai_config(profile: str = "gpt") -> Dict[str, str]:
     """
-    Get OpenAI configuration for a specific profile.
-    
-    Args:
-        profile: Configuration profile name (e.g., "gpt")
-        
-    Returns:
-        Dict with keys: api_key, base_url, model_name
-        
-    Environment variables take precedence over config file:
-        - OPENAI_API_KEY
-        - OPENAI_BASE_URL
-        - MODEL_NAME
+    Get OpenAI configuration for a profile from config.ini.
+    Environment variables OPENAI_API_KEY / OPENAI_BASE_URL / MODEL_NAME take precedence.
     """
     config = get_config()
     
@@ -98,15 +73,7 @@ def get_openai_config(profile: str = "gpt") -> Dict[str, str]:
 
 
 def get_generation_config(stage: str = "synthesis") -> Dict[str, Any]:
-    """
-    Get generation parameters for a specific stage.
-    
-    Args:
-        stage: One of "hpss", "synthesis", "sdn"
-        
-    Returns:
-        Dict with keys: temperature, max_tokens, etc.
-    """
+    """Get generation parameters for a stage (hpss / synthesis / sdn)."""
     config = get_config()
     section = f"generation_{stage}"
     
@@ -130,22 +97,8 @@ def get_generation_config(stage: str = "synthesis") -> Dict[str, Any]:
 
 def get_module_config(module: str = "synthesis", profile: str = None) -> Dict[str, Any]:
     """
-    Get unified configuration for a module (combines OpenAI config + generation config).
-    
-    This is a convenience function that replaces the repetitive get_config() functions
-    in run_hpss.py, run_sdn.py, run_synthesis.py.
-    
-    Args:
-        module: Module name ("hpss", "synthesis", "sdn")
-        profile: OpenAI profile name (default: from BINARYSUM_CONFIG_PROFILE env var or "default")
-        
-    Returns:
-        Dict with keys: api_key, base_url, model_name, temperature, max_tokens
-    
-    Example:
-        config = get_module_config("hpss")
-        # Returns: {"api_key": "...", "base_url": "...", "model_name": "...", 
-        #           "temperature": 0.1, "max_tokens": 4096}
+    Convenience function combining OpenAI config + generation config for a module.
+    Returns dict with keys: api_key, base_url, model_name, temperature, max_tokens.
     """
     if profile is None:
         profile = os.environ.get("BINARYSUM_CONFIG_PROFILE", "default")

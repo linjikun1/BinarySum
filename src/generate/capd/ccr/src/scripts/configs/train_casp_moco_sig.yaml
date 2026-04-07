@@ -1,20 +1,31 @@
-# Change here
+# =============================================
+# Paths — update these before training
+# =============================================
 dataset_name: ../data/bimodal-lmpa-shuffled
 run_name: CASP-moco-lmpa-c-only
-output_dir: /data1/linjk/work/prorec/save/x64_O1/CASP/cg-casp-moco-lmpa-c-sig-only
+output_dir: /path/to/save/CASP/cg-casp-moco-lmpa-c-sig-only
 hub_model_id: PurCL/casp-moco-lmpa-c-only
 
-# Assembly Model Setting
-assembly_model_name_or_path: /data1/linjk/work/prorec/model/PurCL/longcodeart-ep0.3-block200-26m/checkpoint-25000
+# Assembly model (LongCodeArt checkpoint)
+assembly_model_name_or_path: /path/to/models/longcodeart
 
-# Source Model Setting
-source_model_name_or_path: /data1/linjk/work/prorec/model/Salesforce/codet5p-110m-embedding
+# Source model (CodeT5+ 110M embedding)
+source_model_name_or_path: /path/to/models/codet5p-110m-embedding
+
+# GNN Settings
+# gnn_type: GATv2 (recommended), GAT, or GraphSAGE
+gnn_type: "GAT"
+gnn_num_layers: 2
+gnn_heads: 4  # GATv2/GAT only, ignored by GraphSAGE
+gnn_dropout: 0.1
+# gnn_hidden_dim: null  # optional, defaults to assembly_embed_dim // 4
 
 use_momentum_encoder: true
 
 # Do
 trust_remote_code: true
-dataloader_num_workers: 8
+dataloader_num_workers: 16
+dataloader_pin_memory: true
 remove_unused_columns: false
 do_train: true
 do_eval: true

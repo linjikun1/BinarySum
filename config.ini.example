@@ -34,6 +34,7 @@ max_tokens = 4096
 # ========================================
 # CCR (Cross-modal Code Retrieval) Configuration
 # Training takes 10+ hours on 4x A100-80G GPUs
+# Update yaml files in src/generate/capd/ccr/src/scripts/configs/ with your paths.
 # ========================================
 [ccr]
 # Architecture tag (e.g., x64_O2, x64_O3, arm_O2)
@@ -43,9 +44,10 @@ arch = x64_O2
 casp_model = CASP/cg-casp-moco-lmpa-c-only
 prober_model = src_prober_codellama-13b-last1unfreeze
 
-# External model paths (required for training)
-asm_tokenizer_path = models/longcodeart
-src_model_path = models/CodeLlama-13b-hf
+# External model paths — set absolute paths to your downloaded models
+asm_tokenizer_path = /path/to/models/longcodeart
+src_model_path = /path/to/models/CodeLlama-13b-hf
+codet5p_embedding_path = /path/to/models/codet5p-110m-embedding
 
 # Generation parameters
 max_new_tokens = 60

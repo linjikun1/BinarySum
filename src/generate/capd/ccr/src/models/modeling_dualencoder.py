@@ -23,7 +23,7 @@ from torch import nn
 import torch.distributed as dist
 
 # --- 1. 添加 GNN 相关的导入 ---
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, GATConv, SAGEConv, global_mean_pool
 # --- 结束添加 ---
 
 from transformers.modeling_utils import PreTrainedModel
@@ -96,73 +96,72 @@ class CASPOutput(ModelOutput):  # TODO: modify this part later
 # --- 2. 添加 GNN 模块定义 ---
 class CG_GNN_Encoder(nn.Module):
     """
-    过程间图注意力增强模型 (IP-GATv2)。
-    为 caller(type=0) 和 callee(type=1) 分配独立的 GATv2Conv 通道，
-    实现基于角色的非对称拓扑注能。
+    GNN编码器 - 支持 GATv2, GAT, GraphSAGE
+    支持 edge_type 边类型特征 (用于区分不同类型的调用关系)
+    
+    各GNN类型特点:
+    - GATv2: 动态注意力 + 边特征支持，最适合调用图
+    - GAT: 原版注意力，支持边特征但不如GATv2灵活
+    - GraphSAGE: 采样聚合，适合大规模图，边特征处理较弱
     """
-
-    def __init__(self, input_dim, hidden_dim, num_layers=2, heads=4, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim, num_layers=2, heads=4, gnn_type="GATv2", dropout=0.1, num_edge_types=2):
         super().__init__()
-        assert num_layers >= 1
-        self.num_layers = num_layers
+        self.gnn_type = gnn_type
         self.dropout = dropout
-
-        # 为每一层分别建立 caller / callee 两个独立通道
-        self.caller_layers = nn.ModuleList()
-        self.callee_layers = nn.ModuleList()
-
-        in_dim = input_dim
+        self.num_edge_types = num_edge_types
+        self.heads = heads
+        self.convs = nn.ModuleList()
+        
+        # 边类型嵌入 (GATv2 和 GAT 使用)
+        if gnn_type in ["GATv2", "GAT"]:
+            self.edge_type_embedding = nn.Embedding(num_edge_types, hidden_dim)
+        
         for i in range(num_layers):
-            is_last = (i == num_layers - 1)
-            # 最后一层不拼接多头，直接输出 hidden_dim
-            self.caller_layers.append(
-                GATv2Conv(in_dim, hidden_dim, heads=heads, concat=not is_last, dropout=dropout)
-            )
-            self.callee_layers.append(
-                GATv2Conv(in_dim, hidden_dim, heads=heads, concat=not is_last, dropout=dropout)
-            )
-            in_dim = hidden_dim * heads if not is_last else hidden_dim
-
-        # W_proj: 对两流输出进行线性投影 (hidden_dim -> hidden_dim)
-        self.proj = nn.Linear(hidden_dim, hidden_dim)
-        # 残差投影: 将 x 的维度对齐到 hidden_dim 才能相加
-        # 对应公式中的 h_i^{(l)} 项（三分支残差就是此处）
-        self.residual_proj = nn.Linear(input_dim, hidden_dim, bias=False)
-        self.activation = nn.ELU()
-        self.output_dim = hidden_dim
-
-    def forward(self, x, edge_index, edge_type):
-        """
-        x          : [N_total_nodes, input_dim]        --- 对应公式中的 h_i^{(l)}
-        edge_index : [2, Num_Edges]
-        edge_type  : [Num_Edges], 0=caller->target, 1=callee->target
-        """
-        # 按边类型拆分 edge_index，分别对应 N_i^{caller} 和 N_i^{callee}
-        mask_caller = (edge_type == 0)
-        mask_callee = (edge_type == 1)
-        edge_index_caller = edge_index[:, mask_caller]
-        edge_index_callee = edge_index[:, mask_callee]
-
-        h = x
-        for i in range(self.num_layers):
-            is_last = (i == self.num_layers - 1)
-
-            # 双流独立汇聚：对应公式中的 z_i^{caller} 和 z_i^{callee}
-            h_caller = self.caller_layers[i](h, edge_index_caller)  # [N, hidden_dim]
-            h_callee = self.callee_layers[i](h, edge_index_callee)  # [N, hidden_dim]
-
-            if is_last:
-                # 三分支语义融合：对应公式 h_i^{(l+1)} = ELU(W_proj(z_caller + z_callee + h_i^{(l)}))
-                # residual_proj 将输入维度对齐到 hidden_dim
-                h_residual = self.residual_proj(x)  # 始终用最原始的 x 作为残差
-                h = self.activation(self.proj(h_caller + h_callee) + h_residual)
+            if gnn_type == "GATv2":
+                # GATv2: concat模式，输出维度 = hidden_dim * heads
+                in_dim = input_dim if i == 0 else hidden_dim * heads
+                self.convs.append(GATv2Conv(in_dim, hidden_dim, heads=heads, edge_dim=hidden_dim, concat=True))
+            elif gnn_type == "GAT":
+                # GAT: concat模式，输出维度 = hidden_dim * heads
+                in_dim = input_dim if i == 0 else hidden_dim * heads
+                self.convs.append(GATConv(in_dim, hidden_dim, heads=heads, edge_dim=hidden_dim, concat=True))
+            elif gnn_type == "GraphSAGE":
+                # GraphSAGE: 输出维度 = hidden_dim (无heads概念)
+                in_dim = input_dim if i == 0 else hidden_dim
+                self.convs.append(SAGEConv(in_dim, hidden_dim))
             else:
-                # 中间层：相加后 + 激活 + dropout
-                h = h_caller + h_callee
-                h = self.activation(h)
-                h = nn.functional.dropout(h, p=self.dropout, training=self.training)
+                raise ValueError(f"Unsupported gnn_type: {gnn_type}. Choose from: GATv2, GAT, GraphSAGE")
+        
+        # 输出维度
+        if gnn_type in ["GATv2", "GAT"]:
+            self.output_dim = hidden_dim * heads
+        else:  # GraphSAGE
+            self.output_dim = hidden_dim
 
-        return h
+    def forward(self, x, edge_index, edge_type=None):
+        # x: [N_total_nodes, input_dim] (来自 Longelm 的初始特征)
+        # edge_index: [2, Num_Edges]
+        # edge_type: [Num_Edges] 边类型 (0: caller->target, 1: callee->target)
+        
+        # 获取边类型嵌入 (仅 GATv2 和 GAT 使用)
+        edge_attr = None
+        if edge_type is not None and hasattr(self, 'edge_type_embedding'):
+            edge_attr = self.edge_type_embedding(edge_type)
+        
+        for i, conv in enumerate(self.convs):
+            if self.gnn_type in ["GATv2", "GAT"] and edge_attr is not None:
+                x = conv(x, edge_index, edge_attr=edge_attr)
+            else:
+                x = conv(x, edge_index)
+            
+            # 最后一层之前应用激活和 dropout
+            if i < len(self.convs) - 1:
+                x = nn.functional.elu(x)
+                x = nn.functional.dropout(x, p=self.dropout, training=self.training)
+        
+        # 返回所有节点强化后的特征
+        # x shape: [N_total_nodes, output_dim]
+        return x
 # --- 结束添加 ---
 
 class DualEncoderModel(PreTrainedModel):
@@ -212,14 +211,15 @@ class DualEncoderModel(PreTrainedModel):
 
         # --- 3. 修改 __init__ 以添加 GNN ---
         
-        # 3.1 实例化 GNN 模块
-        # (您可以将 gnn_hidden_dim 和 heads 添加到 config 中，这里使用硬编码示例)
-        gnn_hidden_dim = self.assembly_embed_dim // 4 
+        # 3.1 实例化 GNN 模块 (从config读取参数)
+        gnn_hidden_dim = config.gnn_hidden_dim if config.gnn_hidden_dim else self.assembly_embed_dim // 4
         self.gnn_encoder = CG_GNN_Encoder(
             input_dim=self.assembly_embed_dim,
             hidden_dim=gnn_hidden_dim,
-            num_layers=2,
-            heads=4
+            num_layers=config.gnn_num_layers,
+            heads=config.gnn_heads,
+            gnn_type=config.gnn_type,
+            dropout=config.gnn_dropout
         )
         
         # 3.2 修改投影层以匹配 GNN 的输出
@@ -317,7 +317,7 @@ class DualEncoderModel(PreTrainedModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
-        gnn_edge_type: Optional[torch.LongTensor] = None,
+                gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         # --- 结束修改签名 ---
@@ -360,11 +360,11 @@ class DualEncoderModel(PreTrainedModel):
         # 假设 LongelmModel 的 pooler_output 是元组的第二个元素
         initial_node_features = longelm_outputs[1] # [N_total_nodes, longelm_hidden_dim]
         
-        # 步骤 2: GNN 模块进行上下文强化 (利用 caller/callee 异构边类型)
+        # 步骤 2: GNN 模块进行上下文强化
         reinforced_node_features = self.gnn_encoder(
             x=initial_node_features,
             edge_index=gnn_edge_index,
-            edge_type=gnn_edge_type
+                                    edge_type=gnn_edge_type
         ) # [N_total_nodes, gnn_output_dim]
         
         # 步骤 3: 提取 Target 节点的特征
@@ -551,7 +551,7 @@ class MomentumDualEncoderModel(DualEncoderModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
-        gnn_edge_type: Optional[torch.LongTensor] = None,
+                gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         
@@ -599,7 +599,7 @@ class MomentumDualEncoderModel(DualEncoderModel):
         reinforced_node_features_q = self.gnn_encoder(
             x=initial_node_features_q,
             edge_index=gnn_edge_index,
-            edge_type=gnn_edge_type
+                        edge_type=gnn_edge_type
         )
         target_features_q = reinforced_node_features_q.index_select(0, gnn_target_node_indices)
         assembly_embeds = self.assembly_projection(target_features_q)
@@ -659,8 +659,7 @@ class MomentumDualEncoderModel(DualEncoderModel):
             initial_node_features_k = longelm_outputs_k[1]
             reinforced_node_features_k = self.gnn_encoder_k(
                 x=initial_node_features_k,
-                edge_index=gnn_edge_index,
-                edge_type=gnn_edge_type
+                edge_index=gnn_edge_index
             )
             target_features_k = reinforced_node_features_k.index_select(0, gnn_target_node_indices)
             k2 = self.assembly_projection(target_features_k) # 遵循原始代码，使用共享投影层
@@ -743,7 +742,7 @@ class DualEncoderRanker(MomentumDualEncoderModel):
         longelm_relative_node_positions: Optional[torch.LongTensor] = None,
         
         gnn_edge_index: Optional[torch.LongTensor] = None,
-        gnn_edge_type: Optional[torch.LongTensor] = None,
+                gnn_edge_type: Optional[torch.LongTensor] = None,
         gnn_batch_index: Optional[torch.LongTensor] = None,
         gnn_target_node_indices: Optional[torch.LongTensor] = None,
         # ------------------
@@ -798,7 +797,7 @@ class DualEncoderRanker(MomentumDualEncoderModel):
         reinforced_node_features = self.gnn_encoder(
             x=initial_node_features,
             edge_index=gnn_edge_index,
-            edge_type=gnn_edge_type
+                        edge_type=gnn_edge_type
         )
         
         target_features = reinforced_node_features.index_select(0, gnn_target_node_indices)

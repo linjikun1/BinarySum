@@ -13,6 +13,11 @@ class DualEncoderConfig(PretrainedConfig):
         self,
         projection_dim=512,
         logit_scale_init_value=2.6592,
+        gnn_type="GATv2",  # GNN类型 (支持: GATv2, GAT, GraphSAGE)
+        gnn_hidden_dim=None,  # GNN隐藏层维度，默认为 assembly_embed_dim // 4
+        gnn_num_layers=2,
+        gnn_heads=4,
+        gnn_dropout=0.1,
         **kwargs
     ):
 
@@ -32,6 +37,13 @@ class DualEncoderConfig(PretrainedConfig):
 
         self.projection_dim = projection_dim
         self.logit_scale_init_value = logit_scale_init_value
+        
+        # GNN配置
+        self.gnn_type = gnn_type
+        self.gnn_hidden_dim = gnn_hidden_dim
+        self.gnn_num_layers = gnn_num_layers
+        self.gnn_heads = gnn_heads
+        self.gnn_dropout = gnn_dropout
 
     @classmethod
     def from_assembly_source_configs(
